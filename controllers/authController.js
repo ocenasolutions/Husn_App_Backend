@@ -383,3 +383,72 @@ exports.refreshToken = async (req, res) => {
     });
   }
 };
+
+// Delete Account Controller
+exports.deleteAccount = async (req, res) => {
+  try {
+    const { password } = req.body;
+    const user = req.user;
+
+    // If user has a password (not OAuth user), verify it
+    if (user.password) {
+      if (!password) {
+        return res.status(400).json({
+          success: false,
+          message: 'Password is required to delete your account'
+        });
+      }
+
+      const isValidPassword = await user.comparePassword(password);
+      if (!isValidPassword) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid password'
+        });
+      }
+    }
+
+    const userId = user._id;
+    const userEmail = user.email;
+
+    // Clean up user sessions from Redis
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+    if (token) {
+      await req.app.locals.redis.del(`session:${token}`);
+    }
+
+    // Clean up any OTP records
+    await req.app.locals.redis.del(`otp:${userEmail}`);
+
+    // TODO: Clean up related data
+    // You should also delete or anonymize related data like:
+    // - User's orders
+    // - User's bookings
+    // - User's cart items
+    // - User's wishlist
+    // - User's addresses
+    // - User's notifications
+    // Example:
+    // await Order.deleteMany({ userId });
+    // await Booking.deleteMany({ userId });
+    // await Cart.deleteMany({ userId });
+    // await Wishlist.deleteMany({ userId });
+    // await Address.deleteMany({ userId });
+    // await Notification.deleteMany({ userId });
+
+    // Delete the user account
+    await User.findByIdAndDelete(userId);
+
+    res.json({
+      success: true,
+      message: 'Account deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete account error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete account'
+    });
+  }
+};

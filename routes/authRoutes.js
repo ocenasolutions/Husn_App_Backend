@@ -54,4 +54,7 @@ router.post('/logout', authMiddleware, async (req, res) => {
   }
 });
 
+// Delete account route
+router.delete('/delete-account', authMiddleware, authController.deleteAccount);
+
 module.exports = router;
