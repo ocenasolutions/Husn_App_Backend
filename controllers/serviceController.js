@@ -79,8 +79,6 @@ exports.getAllServices = async (req, res) => {
     });
   }
 };
-
-// Get services with active offers (Public)
 exports.getOfferedServices = async (req, res) => {
   try {
     const {

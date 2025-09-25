@@ -1,20 +1,15 @@
-// server/controllers/orderController.js - Fixed version
+// server/controllers/orderController.js - Updated for products only
 const Order = require('../models/Order');
-const CartItem = require('../models/CartItem');
-const ProductCartItem = require('../models/ProductCartItem');
-const Service = require('../models/Service');
 const Product = require('../models/Product');
 
-// Create a new order
+// Create a new order (products only)
 exports.createOrder = async (req, res) => {
   try {
     const { 
       address, 
       paymentMethod, 
-      serviceItems = [], 
       productItems = [],
       totalAmount,
-      type,
       status = 'placed'
     } = req.body;
 
@@ -26,40 +21,17 @@ exports.createOrder = async (req, res) => {
       });
     }
 
-    if (serviceItems.length === 0 && productItems.length === 0) {
+    if (productItems.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'At least one service or product item is required'
+        message: 'At least one product item is required'
       });
     }
 
     // Calculate totals
     let subtotal = 0;
-    let deliveryFee = 0;
-    let serviceFee = 0;
-
-    // Process service items
-    const processedServiceItems = [];
-    for (const item of serviceItems) {
-      const service = await Service.findById(item.serviceId);
-      if (!service) {
-        return res.status(404).json({
-          success: false,
-          message: `Service not found: ${item.serviceId}`
-        });
-      }
-      
-      processedServiceItems.push({
-        serviceId: item.serviceId,
-        quantity: item.quantity,
-        price: item.price || service.price,
-        selectedDate: item.selectedDate,
-        selectedTime: item.selectedTime
-      });
-      
-      subtotal += (item.price || service.price) * item.quantity;
-    }
-
+    const deliveryFee = 50; // Fixed delivery fee for products
+    
     // Process product items
     const processedProductItems = [];
     for (const item of productItems) {
@@ -92,60 +64,38 @@ exports.createOrder = async (req, res) => {
       subtotal += (item.price || product.price) * item.quantity;
     }
 
-    // Calculate fees
-    if (processedProductItems.length > 0) {
-      deliveryFee = 50; // Delivery fee for products
-    }
-    if (processedServiceItems.length > 0) {
-      serviceFee = 25; // Service fee
-    }
-
     const tax = Math.round(subtotal * 0.18); // 18% GST
-    const calculatedTotal = subtotal + deliveryFee + serviceFee + tax;
+    const calculatedTotal = subtotal + deliveryFee + tax;
 
-    // Generate order number manually (instead of relying on pre-save hook)
+    // Generate order number
     const orderCount = await Order.countDocuments();
     const timestamp = Date.now().toString().slice(-8);
     const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
     const orderNumber = `ORD${timestamp}${random}`;
 
-    console.log('Generated order number:', orderNumber);
-
-    // Create order
+    // Create order (product only)
     const order = new Order({
       user: req.user._id,
-      orderNumber: orderNumber, // Explicitly set the order number
-      type: type || (processedProductItems.length > 0 ? 'product' : 'service'),
+      orderNumber: orderNumber,
+      type: 'product',
       status,
-      serviceItems: processedServiceItems,
+      serviceItems: [], // Empty for product orders
       productItems: processedProductItems,
       address,
       paymentMethod,
       subtotal,
       deliveryFee,
-      serviceFee,
+      serviceFee: 0, // No service fee for product orders
       tax,
       totalAmount: calculatedTotal,
       courier: 'FedEx',
-      estimatedDelivery: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000) // 2 days from now
-    });
-
-    console.log('Order data before save:', {
-      user: order.user,
-      orderNumber: order.orderNumber,
-      type: order.type,
-      serviceItemsCount: order.serviceItems.length,
-      productItemsCount: order.productItems.length,
-      totalAmount: order.totalAmount
+      estimatedDelivery: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000)
     });
 
     await order.save();
 
-    console.log('Order saved successfully with order number:', order.orderNumber);
-
-    // Populate the order with service and product details
+    // Populate with product details
     await order.populate([
-      { path: 'serviceItems.serviceId', model: 'Service' },
       { path: 'productItems.productId', model: 'Product' }
     ]);
 
@@ -165,18 +115,24 @@ exports.createOrder = async (req, res) => {
   }
 };
 
-// Get user's orders
+// Get user's orders (products only)
 exports.getUserOrders = async (req, res) => {
   try {
-    const { page = 1, limit = 10, status } = req.query;
+    const { page = 1, limit = 10, status, type = 'product' } = req.query;
     const skip = (page - 1) * limit;
 
-    const filter = { user: req.user._id };
+    const filter = { 
+      user: req.user._id,
+      type: 'product', // Only product orders
+      productItems: { $exists: true, $not: { $size: 0 } } // Must have product items
+    };
+    
     if (status) filter.status = status;
+
+    console.log('Fetching product orders with filter:', filter);
 
     const orders = await Order.find(filter)
       .populate([
-        { path: 'serviceItems.serviceId', model: 'Service' },
         { path: 'productItems.productId', model: 'Product' }
       ])
       .sort({ createdAt: -1 })
@@ -184,6 +140,8 @@ exports.getUserOrders = async (req, res) => {
       .limit(parseInt(limit));
 
     const total = await Order.countDocuments(filter);
+
+    console.log(`Found ${orders.length} product orders out of ${total} total`);
 
     res.json({
       success: true,
@@ -206,21 +164,23 @@ exports.getUserOrders = async (req, res) => {
   }
 };
 
-// Get single order by ID
+// Get single order by ID (products only)
 exports.getOrderById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const order = await Order.findOne({ _id: id, user: req.user._id })
-      .populate([
-        { path: 'serviceItems.serviceId', model: 'Service' },
-        { path: 'productItems.productId', model: 'Product' }
-      ]);
+    const order = await Order.findOne({ 
+      _id: id, 
+      user: req.user._id,
+      type: 'product'
+    }).populate([
+      { path: 'productItems.productId', model: 'Product' }
+    ]);
 
     if (!order) {
       return res.status(404).json({
         success: false,
-        message: 'Order not found'
+        message: 'Product order not found'
       });
     }
 
@@ -253,11 +213,16 @@ exports.updateOrderStatus = async (req, res) => {
       });
     }
 
-    const order = await Order.findOne({ _id: id, user: req.user._id });
+    const order = await Order.findOne({ 
+      _id: id, 
+      user: req.user._id,
+      type: 'product'
+    });
+
     if (!order) {
       return res.status(404).json({
         success: false,
-        message: 'Order not found'
+        message: 'Product order not found'
       });
     }
 
@@ -306,11 +271,16 @@ exports.cancelOrder = async (req, res) => {
     const { id } = req.params;
     const { reason } = req.body;
 
-    const order = await Order.findOne({ _id: id, user: req.user._id });
+    const order = await Order.findOne({ 
+      _id: id, 
+      user: req.user._id,
+      type: 'product'
+    });
+
     if (!order) {
       return res.status(404).json({
         success: false,
-        message: 'Order not found'
+        message: 'Product order not found'
       });
     }
 

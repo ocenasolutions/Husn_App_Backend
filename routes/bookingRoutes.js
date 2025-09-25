@@ -1,21 +1,24 @@
-
-// server/routes/bookingRoutes.js
+// server/routes/bookingRoutes.js - Fixed routes
 const express = require('express');
 const router = express.Router();
 const bookingController = require('../controllers/bookingController');
 const authMiddleware = require('../middlewares/authMiddleware');
 const adminMiddleware = require('../middlewares/adminMiddleware');
 
-// User routes (require authentication)
+// All booking routes require authentication
 router.use(authMiddleware);
 
+// User routes
 router.post('/', bookingController.createBooking);
 router.get('/my-bookings', bookingController.getUserBookings);
-router.get('/:id', bookingController.getBooking);
 router.patch('/:id/cancel', bookingController.cancelBooking);
 
-// Admin routes (require admin privileges)
+// Public routes (user can access their own bookings)
+router.get('/:id', bookingController.getBookingById);
+
+// Admin routes - Fixed paths
 router.get('/admin/all', adminMiddleware, bookingController.getAllBookings);
 router.patch('/admin/:id/status', adminMiddleware, bookingController.updateBookingStatus);
+router.get('/admin/stats', adminMiddleware, bookingController.getBookingStats);
 
 module.exports = router;

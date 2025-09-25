@@ -22,7 +22,7 @@ const notificationSchema = new mongoose.Schema({
     enum: [
       'booking_confirmed', 
       'booking_rejected', 
-      'booking_completed', 
+      'booking_completed',  
       'booking_cancelled',
       'order_placed',
       'order_confirmed',
