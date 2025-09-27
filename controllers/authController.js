@@ -8,6 +8,8 @@ const { sendOTPEmail } = require('../utils/emailService');
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key';
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'your-refresh-secret-key';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_IOS_CLIENT_ID = process.env.GOOGLE_IOS_CLIENT_ID;
+const GOOGLE_ANDROID_CLIENT_ID = process.env.GOOGLE_ANDROID_CLIENT_ID;
 
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
@@ -21,6 +23,50 @@ const generateTokens = (userId) => {
 // Generate OTP
 const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+// Verify Google ID Token
+const verifyGoogleToken = async (idToken) => {
+  try {
+    const ticket = await googleClient.verifyIdToken({
+      idToken,
+      audience: [GOOGLE_CLIENT_ID, GOOGLE_IOS_CLIENT_ID, GOOGLE_ANDROID_CLIENT_ID].filter(Boolean),
+    });
+    
+    const payload = ticket.getPayload();
+    return {
+      success: true,
+      payload
+    };
+  } catch (error) {
+    console.error('Google token verification error:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+};
+
+// Verify Google Access Token
+const verifyGoogleAccessToken = async (accessToken) => {
+  try {
+    const response = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    return {
+      success: true,
+      userInfo: response.data
+    };
+  } catch (error) {
+    console.error('Google access token verification error:', error);
+    return {
+      success: false,
+      error: error.response?.data?.error || error.message
+    };
+  }
 };
 
 // Signup Controller
@@ -57,7 +103,9 @@ exports.signup = async (req, res) => {
     await user.save();
 
     // Cache session in Redis
-    await req.app.locals.redis.setEx(`session:${accessToken}`, 7 * 24 * 60 * 60, user._id.toString());
+    if (req.app.locals.redis) {
+      await req.app.locals.redis.setEx(`session:${accessToken}`, 7 * 24 * 60 * 60, user._id.toString());
+    }
 
     res.status(201).json({
       success: true,
@@ -113,7 +161,9 @@ exports.login = async (req, res) => {
     await user.save();
 
     // Cache session in Redis
-    await req.app.locals.redis.setEx(`session:${accessToken}`, 7 * 24 * 60 * 60, user._id.toString());
+    if (req.app.locals.redis) {
+      await req.app.locals.redis.setEx(`session:${accessToken}`, 7 * 24 * 60 * 60, user._id.toString());
+    }
 
     res.json({
       success: true,
@@ -127,6 +177,157 @@ exports.login = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Internal server error'
+    });
+  }
+};
+
+// Enhanced Google Auth Controller
+exports.googleAuth = async (req, res) => {
+  try {
+    const { accessToken, idToken, userInfo } = req.body;
+
+    if (!accessToken && !idToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Access token or ID token is required'
+      });
+    }
+
+    let googleUserData = null;
+
+    // Verify ID token first (more secure)
+    if (idToken) {
+      const idTokenResult = await verifyGoogleToken(idToken);
+      if (idTokenResult.success) {
+        const payload = idTokenResult.payload;
+        googleUserData = {
+          id: payload.sub,
+          email: payload.email,
+          name: payload.name,
+          picture: payload.picture,
+          givenName: payload.given_name,
+          familyName: payload.family_name,
+          emailVerified: payload.email_verified,
+        };
+      }
+    }
+
+    // Fallback to access token verification
+    if (!googleUserData && accessToken) {
+      const accessTokenResult = await verifyGoogleAccessToken(accessToken);
+      if (accessTokenResult.success) {
+        const userData = accessTokenResult.userInfo;
+        googleUserData = {
+          id: userData.id,
+          email: userData.email,
+          name: userData.name,
+          picture: userData.picture,
+          givenName: userData.given_name,
+          familyName: userData.family_name,
+          emailVerified: userData.verified_email,
+        };
+      }
+    }
+
+    // Use userInfo from frontend as fallback
+    if (!googleUserData && userInfo) {
+      googleUserData = {
+        id: userInfo.id,
+        email: userInfo.email,
+        name: userInfo.name,
+        picture: userInfo.photo,
+        givenName: userInfo.givenName,
+        familyName: userInfo.familyName,
+        emailVerified: true, // Assume verified if coming from Google SDK
+      };
+    }
+
+    if (!googleUserData || !googleUserData.email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Unable to verify Google authentication'
+      });
+    }
+
+    // Check if user exists
+    let user = await User.findOne({ 
+      $or: [
+        { googleId: googleUserData.id },
+        { email: googleUserData.email }
+      ]
+    });
+
+    if (user) {
+      // Update existing user
+      let updated = false;
+      
+      if (!user.googleId) {
+        user.googleId = googleUserData.id;
+        updated = true;
+      }
+      
+      if (!user.googleEmail && googleUserData.email) {
+        user.googleEmail = googleUserData.email;
+        updated = true;
+      }
+      
+      if (!user.avatar && googleUserData.picture) {
+        user.avatar = googleUserData.picture;
+        updated = true;
+      }
+      
+      if (!user.isVerified && googleUserData.emailVerified) {
+        user.isVerified = true;
+        updated = true;
+      }
+
+      // Update name if it's more complete from Google
+      if (googleUserData.name && googleUserData.name.length > user.name.length) {
+        user.name = googleUserData.name;
+        updated = true;
+      }
+
+      if (updated) {
+        await user.save();
+      }
+    } else {
+      // Create new user
+      user = new User({
+        name: googleUserData.name || `${googleUserData.givenName} ${googleUserData.familyName}`.trim(),
+        email: googleUserData.email,
+        googleId: googleUserData.id,
+        googleEmail: googleUserData.email,
+        avatar: googleUserData.picture,
+        isVerified: googleUserData.emailVerified || true
+      });
+      await user.save();
+    }
+
+    // Generate tokens
+    const { accessToken: jwtToken, refreshToken } = generateTokens(user._id);
+
+    // Update refresh token
+    user.refreshToken = refreshToken;
+    await user.save();
+
+    // Cache session in Redis
+    if (req.app.locals.redis) {
+      await req.app.locals.redis.setEx(`session:${jwtToken}`, 7 * 24 * 60 * 60, user._id.toString());
+    }
+
+    res.json({
+      success: true,
+      message: 'Google authentication successful',
+      user: user.toJSON(),
+      tokens: { accessToken: jwtToken, refreshToken }
+    });
+
+  } catch (error) {
+    console.error('Google auth error:', error);
+    
+    res.status(500).json({
+      success: false,
+      message: 'Google authentication failed'
     });
   }
 };
@@ -156,7 +357,9 @@ exports.sendOTP = async (req, res) => {
     const otp = generateOTP();
 
     // Store OTP in Redis with 5 minute expiry
-    await req.app.locals.redis.setEx(`otp:${email}`, 5 * 60, otp);
+    if (req.app.locals.redis) {
+      await req.app.locals.redis.setEx(`otp:${email}`, 5 * 60, otp);
+    }
 
     // Send OTP via email
     await sendOTPEmail(email, user.name, otp);
@@ -188,7 +391,10 @@ exports.verifyOTP = async (req, res) => {
     }
 
     // Get OTP from Redis
-    const storedOTP = await req.app.locals.redis.get(`otp:${email}`);
+    let storedOTP = null;
+    if (req.app.locals.redis) {
+      storedOTP = await req.app.locals.redis.get(`otp:${email}`);
+    }
 
     if (!storedOTP) {
       return res.status(400).json({
@@ -222,10 +428,14 @@ exports.verifyOTP = async (req, res) => {
     await user.save();
 
     // Delete OTP from Redis
-    await req.app.locals.redis.del(`otp:${email}`);
+    if (req.app.locals.redis) {
+      await req.app.locals.redis.del(`otp:${email}`);
+    }
 
     // Cache session in Redis
-    await req.app.locals.redis.setEx(`session:${accessToken}`, 7 * 24 * 60 * 60, user._id.toString());
+    if (req.app.locals.redis) {
+      await req.app.locals.redis.setEx(`session:${accessToken}`, 7 * 24 * 60 * 60, user._id.toString());
+    }
 
     res.json({
       success: true,
@@ -239,99 +449,6 @@ exports.verifyOTP = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Internal server error'
-    });
-  }
-};
-
-// Google Auth Controller
-exports.googleAuth = async (req, res) => {
-  try {
-    const { accessToken } = req.body;
-
-    if (!accessToken) {
-      return res.status(400).json({
-        success: false,
-        message: 'Access token is required'
-      });
-    }
-
-    // Get user info from Google
-    const response = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    });
-
-    const { id, email, name, picture } = response.data;
-
-    if (!email) {
-      return res.status(400).json({
-        success: false,
-        message: 'Unable to get email from Google'
-      });
-    }
-
-    // Check if user exists
-    let user = await User.findOne({ 
-      $or: [
-        { googleId: id },
-        { email: email }
-      ]
-    });
-
-    if (user) {
-      // Update existing user
-      if (!user.googleId) {
-        user.googleId = id;
-        user.googleEmail = email;
-      }
-      if (!user.avatar && picture) {
-        user.avatar = picture;
-      }
-      await user.save();
-    } else {
-      // Create new user
-      user = new User({
-        name,
-        email,
-        googleId: id,
-        googleEmail: email,
-        avatar: picture,
-        isVerified: true
-      });
-      await user.save();
-    }
-
-    // Generate tokens
-    const { accessToken: jwtToken, refreshToken } = generateTokens(user._id);
-
-    // Update refresh token
-    user.refreshToken = refreshToken;
-    await user.save();
-
-    // Cache session in Redis
-    await req.app.locals.redis.setEx(`session:${jwtToken}`, 7 * 24 * 60 * 60, user._id.toString());
-
-    res.json({
-      success: true,
-      message: 'Google authentication successful',
-      user: user.toJSON(),
-      tokens: { accessToken: jwtToken, refreshToken }
-    });
-
-  } catch (error) {
-    console.error('Google auth error:', error);
-    
-    if (error.response?.status === 401) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid Google access token'
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      message: 'Google authentication failed'
     });
   }
 };
@@ -367,7 +484,9 @@ exports.refreshToken = async (req, res) => {
     await user.save();
 
     // Cache new session in Redis
-    await req.app.locals.redis.setEx(`session:${tokens.accessToken}`, 7 * 24 * 60 * 60, user._id.toString());
+    if (req.app.locals.redis) {
+      await req.app.locals.redis.setEx(`session:${tokens.accessToken}`, 7 * 24 * 60 * 60, user._id.toString());
+    }
 
     res.json({
       success: true,
@@ -389,8 +508,6 @@ exports.deleteAccount = async (req, res) => {
   try {
     const { password } = req.body;
     const user = req.user;
-
-    // If user has a password (not OAuth user), verify it
     if (user.password) {
       if (!password) {
         return res.status(400).json({
@@ -410,40 +527,23 @@ exports.deleteAccount = async (req, res) => {
 
     const userId = user._id;
     const userEmail = user.email;
-
-    // Clean up user sessions from Redis
     const token = req.header('Authorization')?.replace('Bearer ', '');
-    if (token) {
+    if (token && req.app.locals.redis) {
       await req.app.locals.redis.del(`session:${token}`);
     }
-
-    // Clean up any OTP records
-    await req.app.locals.redis.del(`otp:${userEmail}`);
-
+    if (req.app.locals.redis) {
+      await req.app.locals.redis.del(`otp:${userEmail}`);
+    }
     // TODO: Clean up related data
     // You should also delete or anonymize related data like:
-    // - User's orders
-    // - User's bookings
-    // - User's cart items
-    // - User's wishlist
-    // - User's addresses
-    // - User's notifications
-    // Example:
-    // await Order.deleteMany({ userId });
-    // await Booking.deleteMany({ userId });
-    // await Cart.deleteMany({ userId });
-    // await Wishlist.deleteMany({ userId });
-    // await Address.deleteMany({ userId });
-    // await Notification.deleteMany({ userId });
-
+    // - User's orders, bookings, cart items, wishlist, addresses, notifications
+    
     // Delete the user account
     await User.findByIdAndDelete(userId);
-
     res.json({
       success: true,
       message: 'Account deleted successfully'
     });
-
   } catch (error) {
     console.error('Delete account error:', error);
     res.status(500).json({
