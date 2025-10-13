@@ -36,7 +36,7 @@ const serviceSchema = new mongoose.Schema({
     default: 'other'
   },
   duration: {
-    type: Number, // in minutes
+    type: Number,
     required: [true, 'Service duration is required'],
     min: [15, 'Duration must be at least 15 minutes']
   },
@@ -45,7 +45,7 @@ const serviceSchema = new mongoose.Schema({
     default: null
   },
   imageKey: {
-    type: String, // S3 key for deletion
+    type: String,
     default: null
   },
   rating: {
@@ -71,7 +71,6 @@ const serviceSchema = new mongoose.Schema({
     trim: true
   }],
   
-  // Offer-related fields
   offerActive: {
     type: Boolean,
     default: false
@@ -138,20 +137,16 @@ serviceSchema.virtual('discountedPrice').get(function() {
   return this.price;
 });
 
-// Virtual for final price (considering both regular discount and offer)
 serviceSchema.virtual('finalPrice').get(function() {
-  // If offer is active and valid, return offer price
   if (this.offerActive && this.offerEndDate && this.offerEndDate > new Date() && this.offerPrice) {
     return this.offerPrice;
   }
-  // Otherwise return regular discounted price or price
   if (this.discount > 0 && this.originalPrice) {
     return Math.round(this.originalPrice * (1 - this.discount / 100));
   }
   return this.price;
 });
 
-// Virtual to check if offer is currently valid
 serviceSchema.virtual('isOfferValid').get(function() {
   if (!this.offerActive || !this.offerEndDate) return false;
   
@@ -170,7 +165,7 @@ serviceSchema.virtual('offerSavings').get(function() {
 // Index for better search performance
 serviceSchema.index({ name: 'text', description: 'text', category: 1 });
 serviceSchema.index({ isActive: 1, featured: -1, createdAt: -1 });
-serviceSchema.index({ offerActive: 1, offerEndDate: 1 }); // New index for offers
+serviceSchema.index({ offerActive: 1, offerEndDate: 1 }); 
 
 // Pre-save middleware to calculate discounted price
 serviceSchema.pre('save', function(next) {

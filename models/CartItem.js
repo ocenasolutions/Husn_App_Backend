@@ -23,18 +23,27 @@ const cartItemSchema = new mongoose.Schema({
     required: true,
     min: 0
   },
-  selectedDate: {
-    type: Date,
-    required: true
-  },
-  selectedTime: {
-    type: String,
-    required: true
-  },
   notes: {
     type: String,
     trim: true,
     maxlength: 200
+  },
+  // Booking details - added during checkout
+  selectedDate: {
+    type: Date,
+    default: null
+  },
+  selectedTime: {
+    type: String,
+    default: null
+  },
+  professionalId: {
+    type: String,
+    default: null
+  },
+  professionalName: {
+    type: String,
+    default: null
   }
 }, {
   timestamps: true

@@ -1,19 +1,21 @@
-// server/controllers/orderController.js - Updated for products only
+// server/controllers/orderController.js - Enhanced with notifications
 const Order = require('../models/Order');
 const Product = require('../models/Product');
+const Service = require('../models/Service');
+const Notification = require('../models/Notification');
 
-// Create a new order (products only)
+// Create a new order
 exports.createOrder = async (req, res) => {
   try {
     const { 
       address, 
       paymentMethod, 
       productItems = [],
+      serviceItems = [],
       totalAmount,
       status = 'placed'
     } = req.body;
 
-    // Validation
     if (!address || !paymentMethod || !totalAmount) {
       return res.status(400).json({
         success: false,
@@ -21,24 +23,27 @@ exports.createOrder = async (req, res) => {
       });
     }
 
-    if (productItems.length === 0) {
+    if (productItems.length === 0 && serviceItems.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'At least one product item is required'
+        message: 'At least one product or service item is required'
       });
     }
 
-    // Calculate totals
+    let orderType = 'mixed';
+    if (productItems.length > 0 && serviceItems.length === 0) {
+      orderType = 'product';
+    } else if (serviceItems.length > 0 && productItems.length === 0) {
+      orderType = 'service';
+    }
+
     let subtotal = 0;
-    const deliveryFee = 50; // Fixed delivery fee for products
+    const deliveryFee = productItems.length > 0 ? 50 : 0;
+    const serviceFee = serviceItems.length > 0 ? 30 : 0;
     
-    // Process product items
     const processedProductItems = [];
     for (const item of productItems) {
-      console.log('Processing product item:', item);
-      
       if (!item.productId) {
-        console.error('Product ID missing in item:', item);
         return res.status(400).json({
           success: false,
           message: 'Product ID is required for each product item'
@@ -46,8 +51,6 @@ exports.createOrder = async (req, res) => {
       }
 
       const product = await Product.findById(item.productId);
-      console.log('Found product:', product ? product.name : 'Not found');
-      
       if (!product) {
         return res.status(404).json({
           success: false,
@@ -62,42 +65,90 @@ exports.createOrder = async (req, res) => {
       });
       
       subtotal += (item.price || product.price) * item.quantity;
+      
+      // ✨ Check stock levels and create notifications if needed
+      const newStock = product.stock - item.quantity;
+      if (newStock === 0) {
+        try {
+          await Notification.createOutOfStockNotification(product);
+        } catch (notifError) {
+          console.error('⚠️ Failed to create out of stock notification:', notifError);
+        }
+      } else if (newStock <= 5 && product.stock > 5) {
+        try {
+          await Notification.createLowStockNotification(product);
+        } catch (notifError) {
+          console.error('⚠️ Failed to create low stock notification:', notifError);
+        }
+      }
     }
 
-    const tax = Math.round(subtotal * 0.18); // 18% GST
-    const calculatedTotal = subtotal + deliveryFee + tax;
+    const processedServiceItems = [];
+    for (const item of serviceItems) {
+      if (!item.serviceId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Service ID is required for each service item'
+        });
+      }
 
-    // Generate order number
-    const orderCount = await Order.countDocuments();
-    const timestamp = Date.now().toString().slice(-8);
-    const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-    const orderNumber = `ORD${timestamp}${random}`;
+      const service = await Service.findById(item.serviceId);
+      if (!service) {
+        return res.status(404).json({
+          success: false,
+          message: `Service not found with ID: ${item.serviceId}`
+        });
+      }
+      
+      processedServiceItems.push({
+        serviceId: item.serviceId,
+        quantity: item.quantity,
+        price: item.price || service.price,
+        selectedDate: item.selectedDate,
+        selectedTime: item.selectedTime
+      });
+      
+      subtotal += (item.price || service.price) * item.quantity;
+    }
 
-    // Create order (product only)
+    const tax = Math.round(subtotal * 0.18);
+    const calculatedTotal = subtotal + deliveryFee + serviceFee + tax;
+
+    const orderNumber = await Order.generateOrderNumber();
+
     const order = new Order({
       user: req.user._id,
       orderNumber: orderNumber,
-      type: 'product',
+      type: orderType,
       status,
-      serviceItems: [], // Empty for product orders
+      serviceItems: processedServiceItems,
       productItems: processedProductItems,
       address,
       paymentMethod,
       subtotal,
       deliveryFee,
-      serviceFee: 0, // No service fee for product orders
+      serviceFee,
       tax,
       totalAmount: calculatedTotal,
-      courier: 'FedEx',
-      estimatedDelivery: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000)
+      courier: productItems.length > 0 ? 'FedEx' : undefined,
     });
 
     await order.save();
 
-    // Populate with product details
     await order.populate([
-      { path: 'productItems.productId', model: 'Product' }
+      { path: 'productItems.productId', model: 'Product' },
+      { path: 'serviceItems.serviceId', model: 'Service' },
+      { path: 'user', select: 'name email phone' }
     ]);
+
+    // ✨ CREATE ADMIN NOTIFICATION FOR NEW ORDER
+    try {
+      await Notification.createOrderNotification(order);
+      console.log('✅ Order notification created for admin');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create order notification:', notifError);
+      // Don't fail the order creation if notification fails
+    }
 
     res.status(201).json({
       success: true,
@@ -115,33 +166,26 @@ exports.createOrder = async (req, res) => {
   }
 };
 
-// Get user's orders (products only)
+// Get user's orders
 exports.getUserOrders = async (req, res) => {
   try {
-    const { page = 1, limit = 10, status, type = 'product' } = req.query;
+    const { page = 1, limit = 10, status, type } = req.query;
     const skip = (page - 1) * limit;
 
-    const filter = { 
-      user: req.user._id,
-      type: 'product', // Only product orders
-      productItems: { $exists: true, $not: { $size: 0 } } // Must have product items
-    };
-    
+    const filter = { user: req.user._id };
     if (status) filter.status = status;
-
-    console.log('Fetching product orders with filter:', filter);
+    if (type) filter.type = type;
 
     const orders = await Order.find(filter)
       .populate([
-        { path: 'productItems.productId', model: 'Product' }
+        { path: 'productItems.productId', model: 'Product' },
+        { path: 'serviceItems.serviceId', model: 'Service' }
       ])
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
 
     const total = await Order.countDocuments(filter);
-
-    console.log(`Found ${orders.length} product orders out of ${total} total`);
 
     res.json({
       success: true,
@@ -164,23 +208,86 @@ exports.getUserOrders = async (req, res) => {
   }
 };
 
-// Get single order by ID (products only)
+// Get all orders (Admin only)
+exports.getAllOrders = async (req, res) => {
+  try {
+    const { page = 1, limit = 50, status, search } = req.query;
+    const skip = (page - 1) * limit;
+
+    let filter = {};
+    if (status && status !== 'all') {
+      filter.status = status;
+    }
+
+    if (search) {
+      filter.$or = [
+        { orderNumber: { $regex: search, $options: 'i' } },
+        { 'address.street': { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const orders = await Order.find(filter)
+      .populate([
+        { path: 'productItems.productId', model: 'Product' },
+        { path: 'serviceItems.serviceId', model: 'Service' },
+        { path: 'user', select: 'name email phone' }
+      ])
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Order.countDocuments(filter);
+
+    res.json({
+      success: true,
+      data: {
+        orders,
+        pagination: {
+          current: parseInt(page),
+          pages: Math.ceil(total / limit),
+          total
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Get all orders error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch orders'
+    });
+  }
+};
+
+// Get single order by ID
 exports.getOrderById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const order = await Order.findOne({ 
+    console.log('Fetching order:', id, 'for user:', req.user._id);
+
+    // First try to find order belonging to this user
+    let order = await Order.findOne({ 
       _id: id, 
-      user: req.user._id,
-      type: 'product'
+      user: req.user._id
     }).populate([
-      { path: 'productItems.productId', model: 'Product' }
+      { path: 'productItems.productId', model: 'Product' },
+      { path: 'serviceItems.serviceId', model: 'Service' }
     ]);
+
+    // If admin, allow access to any order
+    if (!order && req.user.role === 'admin') {
+      order = await Order.findById(id).populate([
+        { path: 'productItems.productId', model: 'Product' },
+        { path: 'serviceItems.serviceId', model: 'Service' },
+        { path: 'user', select: 'name email phone' }
+      ]);
+    }
 
     if (!order) {
       return res.status(404).json({
         success: false,
-        message: 'Product order not found'
+        message: 'Order not found or access denied'
       });
     }
 
@@ -193,7 +300,8 @@ exports.getOrderById = async (req, res) => {
     console.error('Get order by ID error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch order details'
+      message: 'Failed to fetch order details',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
@@ -213,20 +321,15 @@ exports.updateOrderStatus = async (req, res) => {
       });
     }
 
-    const order = await Order.findOne({ 
-      _id: id, 
-      user: req.user._id,
-      type: 'product'
-    });
+    const order = await Order.findById(id);
 
     if (!order) {
       return res.status(404).json({
         success: false,
-        message: 'Product order not found'
+        message: 'Order not found'
       });
     }
 
-    // Set timestamp for status changes
     const now = new Date();
     switch (status) {
       case 'confirmed':
@@ -250,6 +353,11 @@ exports.updateOrderStatus = async (req, res) => {
     order.status = status;
     await order.save();
 
+    await order.populate([
+      { path: 'productItems.productId', model: 'Product' },
+      { path: 'serviceItems.serviceId', model: 'Service' }
+    ]);
+
     res.json({
       success: true,
       message: 'Order status updated successfully',
@@ -265,6 +373,45 @@ exports.updateOrderStatus = async (req, res) => {
   }
 };
 
+// Set delivery date (Admin only)
+exports.setDeliveryDate = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { estimatedDelivery } = req.body;
+
+    if (!estimatedDelivery) {
+      return res.status(400).json({
+        success: false,
+        message: 'Estimated delivery date is required'
+      });
+    }
+
+    const order = await Order.findById(id);
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    order.estimatedDelivery = new Date(estimatedDelivery);
+    await order.save();
+
+    res.json({
+      success: true,
+      message: 'Delivery date set successfully',
+      data: order
+    });
+
+  } catch (error) {
+    console.error('Set delivery date error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to set delivery date'
+    });
+  }
+};
+
 // Cancel order
 exports.cancelOrder = async (req, res) => {
   try {
@@ -273,18 +420,16 @@ exports.cancelOrder = async (req, res) => {
 
     const order = await Order.findOne({ 
       _id: id, 
-      user: req.user._id,
-      type: 'product'
+      user: req.user._id
     });
 
     if (!order) {
       return res.status(404).json({
         success: false,
-        message: 'Product order not found'
+        message: 'Order not found'
       });
     }
 
-    // Check if order can be cancelled
     if (['delivered', 'cancelled'].includes(order.status)) {
       return res.status(400).json({
         success: false,
@@ -311,6 +456,68 @@ exports.cancelOrder = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to cancel order'
+    });
+  }
+};
+
+// Submit review
+exports.submitReview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rating, comment } = req.body;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rating must be between 1 and 5'
+      });
+    }
+
+    const order = await Order.findOne({ 
+      _id: id, 
+      user: req.user._id 
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    if (!order.canReview) {
+      return res.status(400).json({
+        success: false,
+        message: 'This order cannot be reviewed yet'
+      });
+    }
+
+    if (order.review) {
+      return res.status(400).json({
+        success: false,
+        message: 'Order already reviewed'
+      });
+    }
+
+    order.review = {
+      rating,
+      comment: comment || '',
+      createdAt: new Date()
+    };
+
+    await order.save();
+
+    res.json({
+      success: true,
+      message: 'Review submitted successfully',
+      data: order
+    });
+
+  } catch (error) {
+    console.error('Submit review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit review'
     });
   }
 };

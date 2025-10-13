@@ -20,8 +20,6 @@ const adminMiddleware = async (req, res, next) => {
       'testingaditya5@gmail.com',
       'aditya2.ocena@gmail.com',
       'testing.ocena@gmail.com',
-      'adityathakur19200@gmail.com',
-      'vibenames@gmail.com'
     ];
     const isAuthorizedAdmin = adminEmails.includes(user.email.toLowerCase());
     if (!isAuthorizedAdmin) {

@@ -1,7 +1,12 @@
-// server/controllers/bookingController.js - Fixed service bookings controller
+// server/controllers/bookingController.js - Enhanced with OTP and admin features + NOTIFICATIONS
 const Booking = require('../models/Booking');
 const Service = require('../models/Service');
-const User = require('../models/User');
+const Notification = require('../models/Notification'); // ✅ ADDED
+
+// Helper function to generate 6-digit OTP
+const generateOTP = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
 
 // Create a new service booking
 exports.createBooking = async (req, res) => {
@@ -16,7 +21,6 @@ exports.createBooking = async (req, res) => {
       totalAmount 
     } = req.body;
 
-    // Validation
     if (!services || services.length === 0) {
       return res.status(400).json({
         success: false,
@@ -38,7 +42,6 @@ exports.createBooking = async (req, res) => {
       });
     }
 
-    // Process and validate services
     const processedServices = [];
     let calculatedTotal = 0;
 
@@ -51,7 +54,6 @@ exports.createBooking = async (req, res) => {
         });
       }
 
-      // Validate required fields
       if (!serviceItem.selectedDate || !serviceItem.selectedTime) {
         return res.status(400).json({
           success: false,
@@ -71,12 +73,10 @@ exports.createBooking = async (req, res) => {
       calculatedTotal += (serviceItem.price || service.price) * (serviceItem.quantity || 1);
     }
 
-    // Generate booking number first
     const bookingNumber = await Booking.generateBookingNumber();
 
-    // Create booking with booking number
     const booking = new Booking({
-      bookingNumber, // Explicitly set the booking number
+      bookingNumber,
       user: req.user._id,
       services: processedServices,
       customerInfo: {
@@ -90,13 +90,21 @@ exports.createBooking = async (req, res) => {
       serviceType,
       paymentMethod,
       totalAmount: calculatedTotal,
-      status: 'pending' // All bookings start as pending
+      status: 'pending'
     });
 
     await booking.save();
-
-    // Populate service details
     await booking.populate('services.service');
+    await booking.populate('user', 'name email phone');
+
+    // ✅ CREATE ADMIN NOTIFICATION FOR NEW BOOKING
+    try {
+      await Notification.createBookingNotification(booking);
+      console.log('✅ Booking notification created for admin');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create booking notification:', notifError);
+      // Don't fail the booking creation if notification fails
+    }
 
     res.status(201).json({
       success: true,
@@ -114,7 +122,7 @@ exports.createBooking = async (req, res) => {
   }
 };
 
-// Get user's bookings (services only)
+// Get user's bookings
 exports.getUserBookings = async (req, res) => {
   try {
     const { page = 1, limit = 10, status } = req.query;
@@ -153,7 +161,7 @@ exports.getUserBookings = async (req, res) => {
   }
 };
 
-// Get all bookings (for admin)
+// Get all bookings (Admin only)
 exports.getAllBookings = async (req, res) => {
   try {
     const { page = 1, limit = 50, status, search } = req.query;
@@ -182,7 +190,6 @@ exports.getAllBookings = async (req, res) => {
 
     const total = await Booking.countDocuments(filter);
 
-    // Get counts for each status
     const statusCounts = await Booking.aggregate([
       {
         $group: {
@@ -233,7 +240,6 @@ exports.getBookingById = async (req, res) => {
       });
     }
 
-    // Check if user owns this booking (unless admin)
     if (req.user.role !== 'admin' && booking.user._id.toString() !== req.user._id.toString()) {
       return res.status(403).json({
         success: false,
@@ -255,13 +261,13 @@ exports.getBookingById = async (req, res) => {
   }
 };
 
-// Update booking status (admin only)
+// Update booking status (Admin only)
 exports.updateBookingStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { status, rejectionReason, adminNotes } = req.body;
 
-    const validStatuses = ['pending', 'confirmed', 'rejected', 'completed', 'cancelled'];
+    const validStatuses = ['pending', 'confirmed', 'rejected', 'in_progress', 'completed', 'cancelled'];
     
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
@@ -278,11 +284,13 @@ exports.updateBookingStatus = async (req, res) => {
       });
     }
 
-    // Set timestamp for status changes
     const now = new Date();
     switch (status) {
       case 'confirmed':
         booking.confirmedAt = now;
+        // Generate OTP when booking is confirmed
+        booking.serviceOtp = generateOTP();
+        booking.otpGeneratedAt = now;
         break;
       case 'rejected':
         booking.rejectedAt = now;
@@ -290,9 +298,13 @@ exports.updateBookingStatus = async (req, res) => {
           booking.rejectionReason = rejectionReason;
         }
         break;
+      case 'in_progress':
+        booking.serviceStartedAt = now;
+        break;
       case 'completed':
         booking.completedAt = now;
         booking.paymentStatus = 'completed';
+        booking.canReview = true;
         break;
       case 'cancelled':
         booking.cancelledAt = now;
@@ -322,7 +334,121 @@ exports.updateBookingStatus = async (req, res) => {
   }
 };
 
-// Cancel booking (user)
+// Set service time (Admin only)
+exports.setServiceTime = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { serviceStartTime } = req.body;
+
+    if (!serviceStartTime) {
+      return res.status(400).json({
+        success: false,
+        message: 'Service start time is required'
+      });
+    }
+
+    const booking = await Booking.findById(id);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    booking.serviceStartTime = serviceStartTime;
+    await booking.save();
+
+    res.json({
+      success: true,
+      message: 'Service time set successfully',
+      data: booking
+    });
+
+  } catch (error) {
+    console.error('Set service time error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to set service time'
+    });
+  }
+};
+
+// Start service with OTP verification (Admin only)
+exports.startService = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { otp } = req.body;
+
+    if (!otp || otp.length !== 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid 6-digit OTP is required'
+      });
+    }
+
+    const booking = await Booking.findById(id);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.status !== 'confirmed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking must be confirmed before starting service'
+      });
+    }
+
+    if (!booking.serviceOtp) {
+      return res.status(400).json({
+        success: false,
+        message: 'No OTP generated for this booking'
+      });
+    }
+
+    if (booking.serviceOtp !== otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid OTP'
+      });
+    }
+
+    // Check if OTP is expired (valid for 24 hours)
+    const otpAge = Date.now() - new Date(booking.otpGeneratedAt).getTime();
+    const twentyFourHours = 24 * 60 * 60 * 1000;
+    
+    if (otpAge > twentyFourHours) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP has expired'
+      });
+    }
+
+    booking.status = 'in_progress';
+    booking.serviceStartedAt = new Date();
+    booking.otpVerifiedAt = new Date();
+    await booking.save();
+
+    await booking.populate('services.service');
+
+    res.json({
+      success: true,
+      message: 'Service started successfully',
+      data: booking
+    });
+
+  } catch (error) {
+    console.error('Start service error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to start service'
+    });
+  }
+};
+
+// Cancel booking (User)
 exports.cancelBooking = async (req, res) => {
   try {
     const { id } = req.params;
@@ -339,7 +465,6 @@ exports.cancelBooking = async (req, res) => {
       });
     }
 
-    // Check if booking can be cancelled
     if (!booking.canBeCancelled()) {
       return res.status(400).json({
         success: false,
@@ -366,7 +491,69 @@ exports.cancelBooking = async (req, res) => {
   }
 };
 
-// Get booking stats (admin)
+// Submit review
+exports.submitReview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rating, comment } = req.body;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rating must be between 1 and 5'
+      });
+    }
+
+    const booking = await Booking.findOne({ 
+      _id: id, 
+      user: req.user._id 
+    });
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (!booking.canReview) {
+      return res.status(400).json({
+        success: false,
+        message: 'This booking cannot be reviewed yet'
+      });
+    }
+
+    if (booking.review) {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking already reviewed'
+      });
+    }
+
+    booking.review = {
+      rating,
+      comment: comment || '',
+      createdAt: new Date()
+    };
+
+    await booking.save();
+
+    res.json({
+      success: true,
+      message: 'Review submitted successfully',
+      data: booking
+    });
+
+  } catch (error) {
+    console.error('Submit review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit review'
+    });
+  }
+};
+
+// Get booking stats (Admin)
 exports.getBookingStats = async (req, res) => {
   try {
     const stats = await Booking.aggregate([

@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const axios = require('axios');
 const { OAuth2Client } = require('google-auth-library');
-const { sendOTPEmail } = require('../utils/emailService');
+const { sendOTPEmail, sendWelcomeEmail } = require('../utils/emailService');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key';
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'your-refresh-secret-key';
@@ -69,8 +69,8 @@ const verifyGoogleAccessToken = async (accessToken) => {
   }
 };
 
-// Signup Controller
-exports.signup = async (req, res) => {
+// Signup Controller - Step 1: Send OTP
+exports.signupSendOTP = async (req, res) => {
   try {
     const { name, email, password } = req.body;
 
@@ -82,17 +82,121 @@ exports.signup = async (req, res) => {
       });
     }
 
+    if (name.trim().length < 2) {
+      return res.status(400).json({
+        success: false,
+        message: 'Name must be at least 2 characters'
+      });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters'
+      });
+    }
+
     // Check if user already exists
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
+    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    if (existingUser && existingUser.isVerified) {
       return res.status(409).json({
         success: false,
         message: 'User already exists with this email'
       });
     }
 
-    // Create new user
-    const user = new User({ name, email, password });
+    // Generate OTP
+    const otp = generateOTP();
+
+    // Store signup data temporarily in Redis with OTP
+    const signupData = {
+      name: name.trim(),
+      email: email.toLowerCase(),
+      password,
+      otp
+    };
+
+    if (req.app.locals.redis) {
+      await req.app.locals.redis.setEx(`signup:${email.toLowerCase()}`, 10 * 60, JSON.stringify(signupData)); // 10 minutes
+    }
+
+    // Send OTP via email
+    await sendOTPEmail(email, name, otp);
+
+    res.status(200).json({
+      success: true,
+      message: 'OTP sent to your email for account verification'
+    });
+
+  } catch (error) {
+    console.error('Signup send OTP error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send OTP'
+    });
+  }
+};
+
+// Signup Controller - Step 2: Verify OTP and Create Account
+exports.signupVerifyOTP = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and OTP are required'
+      });
+    }
+
+    // Get signup data from Redis
+    let signupDataStr = null;
+    if (req.app.locals.redis) {
+      signupDataStr = await req.app.locals.redis.get(`signup:${email.toLowerCase()}`);
+    }
+
+    if (!signupDataStr) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP expired or invalid. Please start signup process again.'
+      });
+    }
+
+    const signupData = JSON.parse(signupDataStr);
+
+    if (signupData.otp !== otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid OTP'
+      });
+    }
+
+    // Check again if user exists (in case they registered while OTP was pending)
+    const existingUser = await User.findOne({ email: signupData.email });
+    if (existingUser && existingUser.isVerified) {
+      return res.status(409).json({
+        success: false,
+        message: 'User already exists with this email'
+      });
+    }
+
+    let user;
+    if (existingUser && !existingUser.isVerified) {
+      // Update existing unverified user
+      user = existingUser;
+      user.name = signupData.name;
+      user.password = signupData.password;
+      user.isVerified = true;
+    } else {
+      // Create new user
+      user = new User({
+        name: signupData.name,
+        email: signupData.email,
+        password: signupData.password,
+        isVerified: true
+      });
+    }
+
     await user.save();
 
     // Generate tokens
@@ -105,20 +209,29 @@ exports.signup = async (req, res) => {
     // Cache session in Redis
     if (req.app.locals.redis) {
       await req.app.locals.redis.setEx(`session:${accessToken}`, 7 * 24 * 60 * 60, user._id.toString());
+      // Clean up signup data
+      await req.app.locals.redis.del(`signup:${email.toLowerCase()}`);
+    }
+
+    // Send welcome email
+    try {
+      await sendWelcomeEmail(user.email, user.name);
+    } catch (emailError) {
+      console.error('Welcome email error:', emailError);
     }
 
     res.status(201).json({
       success: true,
-      message: 'User created successfully',
+      message: 'Account created successfully',
       user: user.toJSON(),
       tokens: { accessToken, refreshToken }
     });
 
   } catch (error) {
-    console.error('Signup error:', error);
+    console.error('Signup verify OTP error:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error'
+      message: 'Failed to create account'
     });
   }
 };
@@ -136,11 +249,19 @@ exports.login = async (req, res) => {
     }
 
     // Find user
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
       return res.status(401).json({
         success: false,
         message: 'Invalid email or password'
+      });
+    }
+
+    // Check if account is verified
+    if (!user.isVerified) {
+      return res.status(401).json({
+        success: false,
+        message: 'Please verify your account first'
       });
     }
 
@@ -301,6 +422,13 @@ exports.googleAuth = async (req, res) => {
         isVerified: googleUserData.emailVerified || true
       });
       await user.save();
+
+      // Send welcome email
+      try {
+        await sendWelcomeEmail(user.email, user.name);
+      } catch (emailError) {
+        console.error('Welcome email error:', emailError);
+      }
     }
 
     // Generate tokens
@@ -332,8 +460,8 @@ exports.googleAuth = async (req, res) => {
   }
 };
 
-// Send OTP Controller
-exports.sendOTP = async (req, res) => {
+// Forgot Password - Send OTP Controller
+exports.forgotPasswordSendOTP = async (req, res) => {
   try {
     const { email } = req.body;
 
@@ -344,8 +472,8 @@ exports.sendOTP = async (req, res) => {
       });
     }
 
-    // Check if user exists
-    const user = await User.findOne({ email });
+    // Check if user exists and is verified
+    const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -353,12 +481,19 @@ exports.sendOTP = async (req, res) => {
       });
     }
 
+    if (!user.isVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'Account not verified. Please complete signup process first.'
+      });
+    }
+
     // Generate OTP
     const otp = generateOTP();
 
-    // Store OTP in Redis with 5 minute expiry
+    // Store OTP in Redis with 10 minute expiry
     if (req.app.locals.redis) {
-      await req.app.locals.redis.setEx(`otp:${email}`, 5 * 60, otp);
+      await req.app.locals.redis.setEx(`forgot-password:${email.toLowerCase()}`, 10 * 60, otp);
     }
 
     // Send OTP via email
@@ -370,7 +505,7 @@ exports.sendOTP = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Send OTP error:', error);
+    console.error('Forgot password send OTP error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to send OTP'
@@ -378,8 +513,8 @@ exports.sendOTP = async (req, res) => {
   }
 };
 
-// Verify OTP Controller
-exports.verifyOTP = async (req, res) => {
+// Forgot Password - Verify OTP Controller (logs user in)
+exports.forgotPasswordVerifyOTP = async (req, res) => {
   try {
     const { email, otp } = req.body;
 
@@ -393,7 +528,7 @@ exports.verifyOTP = async (req, res) => {
     // Get OTP from Redis
     let storedOTP = null;
     if (req.app.locals.redis) {
-      storedOTP = await req.app.locals.redis.get(`otp:${email}`);
+      storedOTP = await req.app.locals.redis.get(`forgot-password:${email.toLowerCase()}`);
     }
 
     if (!storedOTP) {
@@ -411,7 +546,7 @@ exports.verifyOTP = async (req, res) => {
     }
 
     // Find user
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -419,17 +554,16 @@ exports.verifyOTP = async (req, res) => {
       });
     }
 
-    // Generate tokens
+    // Generate tokens (log user in)
     const { accessToken, refreshToken } = generateTokens(user._id);
 
     // Update refresh token
     user.refreshToken = refreshToken;
-    user.isVerified = true;
     await user.save();
 
     // Delete OTP from Redis
     if (req.app.locals.redis) {
-      await req.app.locals.redis.del(`otp:${email}`);
+      await req.app.locals.redis.del(`forgot-password:${email.toLowerCase()}`);
     }
 
     // Cache session in Redis
@@ -439,19 +573,23 @@ exports.verifyOTP = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'OTP verified successfully',
+      message: 'OTP verified successfully. You are now logged in.',
       user: user.toJSON(),
       tokens: { accessToken, refreshToken }
     });
 
   } catch (error) {
-    console.error('Verify OTP error:', error);
+    console.error('Forgot password verify OTP error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error'
     });
   }
 };
+
+// Legacy OTP methods for backward compatibility
+exports.sendOTP = exports.forgotPasswordSendOTP;
+exports.verifyOTP = exports.forgotPasswordVerifyOTP;
 
 // Refresh Token Controller
 exports.refreshToken = async (req, res) => {
@@ -532,7 +670,8 @@ exports.deleteAccount = async (req, res) => {
       await req.app.locals.redis.del(`session:${token}`);
     }
     if (req.app.locals.redis) {
-      await req.app.locals.redis.del(`otp:${userEmail}`);
+      await req.app.locals.redis.del(`forgot-password:${userEmail}`);
+      await req.app.locals.redis.del(`signup:${userEmail}`);
     }
     // TODO: Clean up related data
     // You should also delete or anonymize related data like:

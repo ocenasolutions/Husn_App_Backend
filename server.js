@@ -16,9 +16,13 @@ const cartRoutes = require('./routes/cartRoutes');
 const productCartRoutes = require('./routes/productCartRoutes');
 const wishlistRoutes = require('./routes/wishlistRoutes');
 const addressRoutes = require('./routes/addressRoutes');
-const productOrderRoutes = require('./routes/productOrderRoutes');
+// const productOrderRoutes = require('./routes/productOrderRoutes');
 const bookingRoutes = require('./routes/bookingRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
+const reviewRoutes = require('./routes/reviewRoutes'); 
+const helpRoutes = require('./routes/helpRoutes');
+const paymentRoutes = require('./routes/paymentRoutes');
+const chatRoutes = require('./routes/chatRoutes');
 
 const app = express();
 
@@ -58,10 +62,15 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/product-cart', productCartRoutes); 
 app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/addresses', addressRoutes);
-app.use('/api/product-orders', productOrderRoutes);
+// app.use('/api/product-orders', productOrderRoutes);
 app.use('/api/bookings', bookingRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/reviews', reviewRoutes); 
+app.use('/api/help', helpRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/chats', chatRoutes);
+
 
 app.get('/', (req, res) => {
   res.json({ message: 'Booking System API Server is running!' });

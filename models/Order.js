@@ -19,7 +19,7 @@ const orderSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['placed', 'confirmed', 'preparing', 'shipped', 'out_for_delivery', 'delivered', 'cancelled'],
+    enum: ['placed', 'confirmed',  'shipped', 'out_for_delivery', 'delivered', 'cancelled'],
     default: 'placed'
   },
   // Service items
@@ -249,3 +249,4 @@ orderSchema.statics.getOrdersSummary = async function(userId) {
 const Order = mongoose.model('Order', orderSchema);
 
 module.exports = Order;
+

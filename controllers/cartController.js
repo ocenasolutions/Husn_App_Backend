@@ -1,4 +1,4 @@
-// server/controllers/cartController.js - Updated with clear route fix
+// server/controllers/cartController.js - Simplified add to cart
 const CartItem = require('../models/CartItem');
 const Service = require('../models/Service');
 
@@ -28,15 +28,15 @@ exports.getCart = async (req, res) => {
   }
 };
 
-// Add item to cart
+// Add item to cart - NO booking details required
 exports.addToCart = async (req, res) => {
   try {
-    const { serviceId, quantity = 1, selectedDate, selectedTime, notes } = req.body;
+    const { serviceId, quantity = 1, notes } = req.body;
 
-    if (!serviceId || !selectedDate || !selectedTime) {
+    if (!serviceId) {
       return res.status(400).json({
         success: false,
-        message: 'Service ID, selected date, and time are required'
+        message: 'Service ID is required'
       });
     }
 
@@ -51,25 +51,21 @@ exports.addToCart = async (req, res) => {
     // Check if item already exists in cart
     let cartItem = await CartItem.findOne({ 
       user: req.user._id, 
-      service: serviceId,
-      selectedDate: new Date(selectedDate),
-      selectedTime 
+      service: serviceId
     });
 
     if (cartItem) {
       // Update existing cart item
-      cartItem.quantity = quantity;
+      cartItem.quantity += quantity;
       cartItem.price = service.price;
-      cartItem.notes = notes || '';
+      if (notes) cartItem.notes = notes;
     } else {
-      // Create new cart item
+      // Create new cart item without booking details
       cartItem = new CartItem({
         user: req.user._id,
         service: serviceId,
         quantity,
         price: service.price,
-        selectedDate: new Date(selectedDate),
-        selectedTime,
         notes: notes || ''
       });
     }
@@ -95,9 +91,27 @@ exports.addToCart = async (req, res) => {
 exports.updateCartItem = async (req, res) => {
   try {
     const { id } = req.params;
-    const { quantity, selectedDate, selectedTime, notes } = req.body;
+    const { serviceId, quantity, notes, selectedDate, selectedTime, professionalId, professionalName } = req.body;
 
-    const cartItem = await CartItem.findOne({ _id: id, user: req.user._id });
+    let cartItem;
+
+    if (serviceId) {
+      cartItem = await CartItem.findOne({ 
+        user: req.user._id, 
+        service: serviceId 
+      });
+    } else if (id) {
+      cartItem = await CartItem.findOne({ 
+        _id: id, 
+        user: req.user._id 
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Either serviceId or cart item id is required'
+      });
+    }
+
     if (!cartItem) {
       return res.status(404).json({
         success: false,
@@ -105,10 +119,23 @@ exports.updateCartItem = async (req, res) => {
       });
     }
 
-    if (quantity) cartItem.quantity = quantity;
-    if (selectedDate) cartItem.selectedDate = new Date(selectedDate);
-    if (selectedTime) cartItem.selectedTime = selectedTime;
+    // Update fields
+    if (quantity !== undefined) {
+      if (quantity < 1) {
+        await CartItem.findByIdAndDelete(cartItem._id);
+        return res.json({
+          success: true,
+          message: 'Cart item removed'
+        });
+      }
+      cartItem.quantity = quantity;
+    }
+    
     if (notes !== undefined) cartItem.notes = notes;
+    if (selectedDate !== undefined) cartItem.selectedDate = selectedDate;
+    if (selectedTime !== undefined) cartItem.selectedTime = selectedTime;
+    if (professionalId !== undefined) cartItem.professionalId = professionalId;
+    if (professionalName !== undefined) cartItem.professionalName = professionalName;
 
     await cartItem.save();
     await cartItem.populate('service');
@@ -122,7 +149,8 @@ exports.updateCartItem = async (req, res) => {
     console.error('Update cart item error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to update cart item'
+      message: 'Failed to update cart item',
+      error: error.message
     });
   }
 };
@@ -132,7 +160,11 @@ exports.removeFromCart = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const cartItem = await CartItem.findOneAndDelete({ _id: id, user: req.user._id });
+    const cartItem = await CartItem.findOneAndDelete({ 
+      _id: id, 
+      user: req.user._id 
+    });
+    
     if (!cartItem) {
       return res.status(404).json({
         success: false,

@@ -405,6 +405,9 @@ exports.updateProduct = async (req, res) => {
       });
     }
 
+    const oldStock = product.stock;
+    const oldStockStatus = product.stockStatus;
+
     // Update fields
     if (name) product.name = name.trim();
     if (description !== undefined) product.description = description.trim();
@@ -471,6 +474,22 @@ exports.updateProduct = async (req, res) => {
     await product.save();
     await product.populate('createdBy', 'name email');
 
+    // ✨ CREATE NOTIFICATIONS FOR STOCK CHANGES
+    if (stock !== undefined && stock !== oldStock) {
+      try {
+        const newStock = parseInt(stock);
+        if (newStock === 0 && oldStock > 0) {
+          await Notification.createOutOfStockNotification(product);
+          console.log('✅ Out of stock notification created');
+        } else if (newStock <= 5 && oldStock > 5) {
+          await Notification.createLowStockNotification(product);
+          console.log('✅ Low stock notification created');
+        }
+      } catch (notifError) {
+        console.error('⚠️ Failed to create stock notification:', notifError);
+      }
+    }
+
     res.json({
       success: true,
       message: 'Product updated successfully',
@@ -486,6 +505,7 @@ exports.updateProduct = async (req, res) => {
     });
   }
 };
+
 
 // Delete product (Admin only)
 exports.deleteProduct = async (req, res) => {
@@ -677,6 +697,21 @@ exports.updateStockStatus = async (req, res) => {
     product.updatedAt = new Date();
     
     await product.save();
+
+    // ✨ CREATE NOTIFICATION FOR STOCK STATUS CHANGES
+    if (oldStockStatus !== stockStatus) {
+      try {
+        if (stockStatus === 'out-of-stock') {
+          await Notification.createOutOfStockNotification(product);
+          console.log('✅ Out of stock notification created');
+        } else if (stockStatus === 'low-stock') {
+          await Notification.createLowStockNotification(product);
+          console.log('✅ Low stock notification created');
+        }
+      } catch (notifError) {
+        console.error('⚠️ Failed to create stock notification:', notifError);
+      }
+    }
 
     console.log(`Stock status updated from ${oldStockStatus} to ${product.stockStatus}`);
 

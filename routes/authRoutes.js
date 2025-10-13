@@ -4,11 +4,25 @@ const authController = require('../controllers/authController');
 const authMiddleware = require('../middlewares/authMiddleware');
 
 // Authentication routes
-router.post('/signup', authController.signup);
+// Two-step signup process
+router.post('/signup/send-otp', authController.signupSendOTP);
+router.post('/signup/verify-otp', authController.signupVerifyOTP);
+
+// Login route
 router.post('/login', authController.login);
+
+// Google authentication
 router.post('/google', authController.googleAuth);
+
+// Forgot password routes (OTP-based)
+router.post('/forgot-password/send-otp', authController.forgotPasswordSendOTP);
+router.post('/forgot-password/verify-otp', authController.forgotPasswordVerifyOTP);
+
+// Legacy OTP routes (for backward compatibility)
 router.post('/send-otp', authController.sendOTP);
 router.post('/verify-otp', authController.verifyOTP);
+
+// Token refresh
 router.post('/refresh', authController.refreshToken);
 
 // Protected route example
@@ -32,7 +46,7 @@ router.post('/logout', authMiddleware, async (req, res) => {
     const token = req.header('Authorization')?.replace('Bearer ', '');
     
     // Remove session from Redis
-    if (token) {
+    if (token && req.app.locals.redis) {
       await req.app.locals.redis.del(`session:${token}`);
     }
     
