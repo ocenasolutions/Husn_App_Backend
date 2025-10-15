@@ -1,4 +1,4 @@
-// server/models/Order.js - Fixed version with better order number generation
+// server/models/Order.js - Enhanced with Razorpay payment fields
 const mongoose = require('mongoose');
 
 const orderSchema = new mongoose.Schema({
@@ -19,7 +19,7 @@ const orderSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['placed', 'confirmed',  'shipped', 'out_for_delivery', 'delivered', 'cancelled'],
+    enum: ['placed', 'confirmed', 'shipped', 'out_for_delivery', 'delivered', 'cancelled'],
     default: 'placed'
   },
   // Service items
@@ -37,7 +37,9 @@ const orderSchema = new mongoose.Schema({
       min: 0
     },
     selectedDate: Date,
-    selectedTime: String
+    selectedTime: String,
+    professionalId: String,
+    professionalName: String
   }],
   // Product items
   productItems: [{
@@ -88,6 +90,33 @@ const orderSchema = new mongoose.Schema({
     enum: ['pending', 'completed', 'failed', 'refunded'],
     default: 'pending'
   },
+  // Razorpay payment details
+  razorpayOrderId: {
+    type: String,
+    default: null
+  },
+  razorpayPaymentId: {
+    type: String,
+    default: null
+  },
+  razorpaySignature: {
+    type: String,
+    default: null
+  },
+  // Refund details
+  refundId: {
+    type: String,
+    default: null
+  },
+  refundAmount: {
+    type: Number,
+    default: 0
+  },
+  refundStatus: {
+    type: String,
+    enum: ['none', 'pending', 'completed', 'failed'],
+    default: 'none'
+  },
   // Amounts
   subtotal: {
     type: Number,
@@ -135,7 +164,6 @@ orderSchema.statics.generateOrderNumber = async function() {
   const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
   let orderNumber = `ORD${timestamp}${random}`;
   
-  // Ensure uniqueness
   let attempts = 0;
   const maxAttempts = 10;
   
@@ -145,13 +173,11 @@ orderSchema.statics.generateOrderNumber = async function() {
       return orderNumber;
     }
     
-    // Generate new number if collision
     const newRandom = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
     orderNumber = `ORD${timestamp}${newRandom}`;
     attempts++;
   }
   
-  // Fallback: use timestamp + increment
   const count = await this.countDocuments();
   return `ORD${timestamp}${(count + 1).toString().padStart(4, '0')}`;
 };
@@ -161,9 +187,8 @@ orderSchema.pre('save', async function(next) {
   if (!this.orderNumber) {
     try {
       this.orderNumber = await this.constructor.generateOrderNumber();
-      console.log('Generated order number in pre-save:', this.orderNumber);
     } catch (error) {
-      console.error('Error generating order number in pre-save:', error);
+      console.error('Error generating order number:', error);
       return next(error);
     }
   }
@@ -180,12 +205,22 @@ orderSchema.pre('save', function(next) {
   next();
 });
 
+// Auto-update payment status for COD orders when delivered
+orderSchema.pre('save', function(next) {
+  if (this.isModified('status') && this.status === 'delivered' && this.paymentMethod === 'cod') {
+    this.paymentStatus = 'completed';
+  }
+  next();
+});
+
 // Indexes for better performance
 orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ orderNumber: 1 }, { unique: true });
 orderSchema.index({ status: 1 });
 orderSchema.index({ type: 1 });
 orderSchema.index({ createdAt: -1 });
+orderSchema.index({ razorpayOrderId: 1 });
+orderSchema.index({ razorpayPaymentId: 1 });
 
 // Virtual for order age in days
 orderSchema.virtual('orderAge').get(function() {
@@ -205,9 +240,12 @@ orderSchema.methods.canBeCancelled = function() {
   return ['placed', 'confirmed'].includes(this.status);
 };
 
-// Instance method to check if order can be modified
-orderSchema.methods.canBeModified = function() {
-  return this.status === 'placed';
+// Instance method to check if order can be refunded
+orderSchema.methods.canBeRefunded = function() {
+  return this.paymentMethod === 'online' && 
+         this.paymentStatus === 'completed' && 
+         this.razorpayPaymentId &&
+         this.refundStatus === 'none';
 };
 
 // Static method to get orders summary for user
@@ -249,4 +287,3 @@ orderSchema.statics.getOrdersSummary = async function(userId) {
 const Order = mongoose.model('Order', orderSchema);
 
 module.exports = Order;
-

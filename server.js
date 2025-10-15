@@ -35,7 +35,7 @@ if (!fs.existsSync('uploads')) {
   fs.mkdirSync('uploads', { recursive: true });
 }
 
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/ocenaaa', {
+mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://testingaditya5:testing321@cluster0.vwas0.mongodb.net/HUSN?retryWrites=true&w=majority&tls=true', {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 })

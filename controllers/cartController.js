@@ -1,4 +1,3 @@
-// server/controllers/cartController.js - Simplified add to cart
 const CartItem = require('../models/CartItem');
 const Service = require('../models/Service');
 

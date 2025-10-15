@@ -2,40 +2,34 @@
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 const Order = require('../models/Order');
-const Payment = require('../models/Payment');
 
-// Lazy initialization of Razorpay instance
-let razorpay = null;
-const getRazorpayInstance = () => {
-  if (!razorpay) {
-    razorpay = new Razorpay({
-      key_id: process.env.RAZORPAY_KEY_ID,
-      key_secret: process.env.RAZORPAY_KEY_SECRET
-    });
-  }
-  return razorpay;
-};
+// Initialize Razorpay instance
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET
+});
 
 // Create Razorpay order
 exports.createRazorpayOrder = async (req, res) => {
   try {
-    const { amount, currency = 'INR', receipt, notes } = req.body;
+    const { amount, currency = 'INR', receipt } = req.body;
 
     if (!amount || amount <= 0) {
       return res.status(400).json({
         success: false,
-        message: 'Valid amount is required'
+        message: 'Invalid amount'
       });
     }
 
+    // Create Razorpay order
     const options = {
-      amount: Math.round(amount * 100), // Convert to paise
+      amount: Math.round(amount * 100), // Amount in paise
       currency,
       receipt: receipt || `receipt_${Date.now()}`,
-      notes: notes || {}
+      payment_capture: 1 // Auto capture payment
     };
 
-    const razorpayOrder = await getRazorpayInstance().orders.create(options);
+    const razorpayOrder = await razorpay.orders.create(options);
 
     res.json({
       success: true,
@@ -43,7 +37,7 @@ exports.createRazorpayOrder = async (req, res) => {
         orderId: razorpayOrder.id,
         amount: razorpayOrder.amount,
         currency: razorpayOrder.currency,
-        key: process.env.RAZORPAY_KEY_ID
+        keyId: process.env.RAZORPAY_KEY_ID
       }
     });
 
@@ -57,201 +51,194 @@ exports.createRazorpayOrder = async (req, res) => {
   }
 };
 
-// Verify Razorpay payment signature
-exports.verifyPayment = async (req, res) => {
+// Verify Razorpay payment
+exports.verifyRazorpayPayment = async (req, res) => {
   try {
-    const {
-      razorpay_order_id,
-      razorpay_payment_id,
+    const { 
+      razorpay_order_id, 
+      razorpay_payment_id, 
       razorpay_signature,
-      orderData
+      orderId 
     } = req.body;
 
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
       return res.status(400).json({
         success: false,
-        message: 'Missing payment verification parameters'
+        message: 'Missing payment verification details'
       });
     }
 
     // Verify signature
-    const sign = razorpay_order_id + '|' + razorpay_payment_id;
-    const expectedSign = crypto
+    const body = razorpay_order_id + '|' + razorpay_payment_id;
+    const expectedSignature = crypto
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-      .update(sign.toString())
+      .update(body.toString())
       .digest('hex');
 
-    if (razorpay_signature !== expectedSign) {
+    const isValid = expectedSignature === razorpay_signature;
+
+    if (!isValid) {
       return res.status(400).json({
         success: false,
         message: 'Invalid payment signature'
       });
     }
 
-    // Payment verified successfully
-    // Create payment record
-    const payment = new Payment({
-      user: req.user._id,
-      razorpayOrderId: razorpay_order_id,
-      razorpayPaymentId: razorpay_payment_id,
-      razorpaySignature: razorpay_signature,
-      amount: orderData.totalAmount,
-      currency: 'INR',
-      status: 'completed',
-      method: 'online'
-    });
-
-    await payment.save();
-
-    // Create the actual order
-    const order = new Order({
-      user: req.user._id,
-      orderNumber: await Order.generateOrderNumber(),
-      type: orderData.type,
-      status: 'placed',
-      serviceItems: orderData.serviceItems || [],
-      productItems: orderData.productItems || [],
-      address: orderData.address,
-      paymentMethod: 'online',
-      paymentStatus: 'completed',
-      paymentId: payment._id,
-      subtotal: orderData.subtotal,
-      deliveryFee: orderData.deliveryFee,
-      serviceFee: orderData.serviceFee,
-      tax: orderData.tax,
-      totalAmount: orderData.totalAmount,
-      courier: orderData.productItems?.length > 0 ? 'FedEx' : undefined
-    });
-
-    await order.save();
-
-    await order.populate([
-      { path: 'productItems.productId', model: 'Product' },
-      { path: 'serviceItems.serviceId', model: 'Service' }
-    ]);
+    // Update order payment status if orderId is provided
+    if (orderId) {
+      const order = await Order.findById(orderId);
+      if (order) {
+        order.paymentStatus = 'completed';
+        order.razorpayOrderId = razorpay_order_id;
+        order.razorpayPaymentId = razorpay_payment_id;
+        await order.save();
+      }
+    }
 
     res.json({
       success: true,
-      message: 'Payment verified and order created successfully',
+      message: 'Payment verified successfully',
       data: {
-        payment,
-        order
+        razorpay_order_id,
+        razorpay_payment_id
       }
     });
 
   } catch (error) {
-    console.error('Verify payment error:', error);
+    console.error('Verify Razorpay payment error:', error);
     res.status(500).json({
       success: false,
-      message: 'Payment verification failed',
+      message: 'Failed to verify payment',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
 
-// Handle payment failure
-exports.handlePaymentFailure = async (req, res) => {
+// Fetch payment details
+exports.getPaymentDetails = async (req, res) => {
   try {
-    const { 
-      razorpay_order_id, 
-      razorpay_payment_id,
-      error_description,
-      error_reason 
-    } = req.body;
+    const { paymentId } = req.params;
 
-    // Create failed payment record
-    const payment = new Payment({
-      user: req.user._id,
-      razorpayOrderId: razorpay_order_id,
-      razorpayPaymentId: razorpay_payment_id,
-      amount: 0, // Will be updated if available
-      currency: 'INR',
-      status: 'failed',
-      method: 'online',
-      failureReason: error_description || error_reason || 'Payment failed'
-    });
+    if (!paymentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment ID is required'
+      });
+    }
 
-    await payment.save();
+    const payment = await razorpay.payments.fetch(paymentId);
 
     res.json({
       success: true,
-      message: 'Payment failure recorded',
       data: payment
     });
 
   } catch (error) {
-    console.error('Handle payment failure error:', error);
+    console.error('Fetch payment details error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to record payment failure'
+      message: 'Failed to fetch payment details',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
 
-// Get payment details
-exports.getPaymentById = async (req, res) => {
+// Refund payment
+exports.refundPayment = async (req, res) => {
   try {
-    const { id } = req.params;
+    const { paymentId } = req.params;
+    const { amount, notes } = req.body;
 
-    const payment = await Payment.findOne({
-      _id: id,
-      user: req.user._id
-    });
-
-    if (!payment) {
-      return res.status(404).json({
+    if (!paymentId) {
+      return res.status(400).json({
         success: false,
-        message: 'Payment not found'
+        message: 'Payment ID is required'
       });
+    }
+
+    const refundOptions = {
+      payment_id: paymentId,
+      ...(amount && { amount: Math.round(amount * 100) }), // Partial refund if amount specified
+      ...(notes && { notes })
+    };
+
+    const refund = await razorpay.payments.refund(paymentId, refundOptions);
+
+    // Update order payment status
+    const order = await Order.findOne({ razorpayPaymentId: paymentId });
+    if (order) {
+      order.paymentStatus = 'refunded';
+      order.refundId = refund.id;
+      order.refundAmount = refund.amount / 100;
+      await order.save();
     }
 
     res.json({
       success: true,
-      data: payment
+      message: 'Refund processed successfully',
+      data: refund
     });
 
   } catch (error) {
-    console.error('Get payment error:', error);
+    console.error('Refund payment error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch payment details'
+      message: 'Failed to process refund',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
 
-// Get user's payment history
-exports.getPaymentHistory = async (req, res) => {
+// Webhook handler for Razorpay events
+exports.handleWebhook = async (req, res) => {
   try {
-    const { page = 1, limit = 10, status } = req.query;
-    const skip = (page - 1) * limit;
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const signature = req.headers['x-razorpay-signature'];
 
-    const filter = { user: req.user._id };
-    if (status) filter.status = status;
+    // Verify webhook signature
+    const expectedSignature = crypto
+      .createHmac('sha256', webhookSecret)
+      .update(JSON.stringify(req.body))
+      .digest('hex');
 
-    const payments = await Payment.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
+    if (signature !== expectedSignature) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid webhook signature'
+      });
+    }
 
-    const total = await Payment.countDocuments(filter);
+    const event = req.body.event;
+    const payload = req.body.payload;
 
-    res.json({
-      success: true,
-      data: {
-        payments,
-        pagination: {
-          current: parseInt(page),
-          pages: Math.ceil(total / limit),
-          total
-        }
-      }
-    });
+    // Handle different webhook events
+    switch (event) {
+      case 'payment.captured':
+        console.log('Payment captured:', payload.payment.entity.id);
+        // Update order status
+        break;
+
+      case 'payment.failed':
+        console.log('Payment failed:', payload.payment.entity.id);
+        // Handle failed payment
+        break;
+
+      case 'refund.processed':
+        console.log('Refund processed:', payload.refund.entity.id);
+        // Handle refund
+        break;
+
+      default:
+        console.log('Unhandled webhook event:', event);
+    }
+
+    res.json({ success: true });
 
   } catch (error) {
-    console.error('Get payment history error:', error);
+    console.error('Webhook handler error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch payment history'
+      message: 'Webhook processing failed'
     });
   }
 };
