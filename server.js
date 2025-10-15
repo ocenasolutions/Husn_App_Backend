@@ -35,15 +35,16 @@ if (!fs.existsSync('uploads')) {
   fs.mkdirSync('uploads', { recursive: true });
 }
 
-mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://testingaditya5:testing321@cluster0.vwas0.mongodb.net/HUSN?retryWrites=true&w=majority&tls=true', {
+mongoose.connect(process.env.MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 })
 .then(() => console.log('✅ MongoDB Connected'))
 .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
+
 const redisClient = redis.createClient({
-  url: process.env.REDIS_URL || 'redis://localhost:6379'
+  url: process.env.REDIS_URL 
 });
 
 redisClient.on('connect', () => console.log('✅ Redis Connected'));
