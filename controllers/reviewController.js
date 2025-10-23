@@ -1,60 +1,24 @@
 // server/controllers/reviewController.js
 const Review = require('../models/Review');
 const Order = require('../models/Order');
-const Booking = require('../models/Booking');
 const Product = require('../models/Product');
 const Service = require('../models/Service');
-const multer = require('multer');
-const path = require('path');
+const { uploadToS3, deleteMultipleFromS3 } = require('../config/s3');
 
-// Configure multer for image uploads
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, 'uploads/reviews/');
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, 'review-' + uniqueSuffix + path.extname(file.originalname));
-  }
-});
-
-const upload = multer({
-  storage: storage,
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB limit
-  },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed!'), false);
-    }
-  }
-});
-
-// Create a new review
+// Create a review for a product or service
 exports.createReview = async (req, res) => {
   try {
-    const {
-      referenceType,
-      referenceId,
-      rating,
-      comment,
-      serviceQuality,
-      deliverySpeed,
-      valueForMoney,
-      wouldRecommend
-    } = req.body;
+    const { orderId, itemId, type, rating, comment } = req.body;
+    const userId = req.user._id;
 
     // Validate required fields
-    if (!referenceType || !referenceId || !rating) {
+    if (!orderId || !itemId || !type || !rating) {
       return res.status(400).json({
         success: false,
-        message: 'Reference type, reference ID, and rating are required'
+        message: 'Order ID, item ID, type, and rating are required'
       });
     }
 
-    // Validate rating range
     if (rating < 1 || rating > 5) {
       return res.status(400).json({
         success: false,
@@ -62,34 +26,47 @@ exports.createReview = async (req, res) => {
       });
     }
 
-    // Check if reference exists and belongs to user
-    let reference;
-    if (referenceType === 'Order') {
-      reference = await Order.findOne({
-        _id: referenceId,
-        user: req.user._id,
-        status: { $in: ['delivered', 'completed'] }
-      });
-    } else if (referenceType === 'Booking') {
-      reference = await Booking.findOne({
-        _id: referenceId,
-        user: req.user._id,
-        status: 'completed'
+    // Check if order exists and belongs to user
+    const order = await Order.findOne({ _id: orderId, user: userId });
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found or access denied'
       });
     }
 
-    if (!reference) {
-      return res.status(404).json({
+    // Verify order is delivered
+    if (order.status !== 'delivered') {
+      return res.status(400).json({
         success: false,
-        message: 'Reference not found or not eligible for review'
+        message: 'Can only review delivered orders'
+      });
+    }
+
+    // Verify the item is in the order
+    let itemExists = false;
+    if (type === 'product') {
+      itemExists = order.productItems.some(item => 
+        item.productId.toString() === itemId
+      );
+    } else if (type === 'service') {
+      itemExists = order.serviceItems.some(item => 
+        item.serviceId.toString() === itemId
+      );
+    }
+
+    if (!itemExists) {
+      return res.status(400).json({
+        success: false,
+        message: 'Item not found in this order'
       });
     }
 
     // Check if user already reviewed this item
     const existingReview = await Review.findOne({
-      user: req.user._id,
-      referenceType,
-      referenceId
+      user: userId,
+      order: orderId,
+      [type === 'product' ? 'productId' : 'serviceId']: itemId
     });
 
     if (existingReview) {
@@ -99,31 +76,52 @@ exports.createReview = async (req, res) => {
       });
     }
 
-    // Handle image uploads
-    let images = [];
+    // Handle media uploads
+    const media = [];
     if (req.files && req.files.length > 0) {
-      images = req.files.map(file => file.filename);
+      for (const file of req.files) {
+        const mediaType = file.mimetype.startsWith('image/') ? 'image' : 'video';
+        const folder = `reviews/${type}s/${mediaType}s`;
+        
+        const uploaded = await uploadToS3(
+          file.buffer,
+          file.originalname,
+          file.mimetype,
+          folder
+        );
+
+        media.push({
+          url: uploaded.url,
+          type: mediaType,
+          key: uploaded.key
+        });
+      }
     }
 
     // Create review
-    const review = new Review({
-      user: req.user._id,
-      referenceType,
-      referenceId,
-      rating,
-      comment: comment?.trim(),
-      serviceQuality,
-      deliverySpeed,
-      valueForMoney,
-      wouldRecommend: wouldRecommend !== false,
-      images,
+    const reviewData = {
+      user: userId,
+      order: orderId,
+      type,
+      rating: parseInt(rating),
+      comment: comment || '',
+      media,
       isVerifiedPurchase: true
-    });
+    };
 
-    await review.save();
+    if (type === 'product') {
+      reviewData.productId = itemId;
+    } else {
+      reviewData.serviceId = itemId;
+    }
 
-    // Populate user details
-    await review.populate('user', 'name profileImage');
+    const review = await Review.create(reviewData);
+
+    await review.populate([
+      { path: 'user', select: 'name profilePicture' },
+      { path: 'productId', select: 'name primaryImage' },
+      { path: 'serviceId', select: 'name image_url' }
+    ]);
 
     res.status(201).json({
       success: true,
@@ -135,8 +133,110 @@ exports.createReview = async (req, res) => {
     console.error('Create review error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to submit review',
+      message: 'Failed to create review',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Get reviews for a specific product
+exports.getProductReviews = async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const { page = 1, limit = 10, sort = 'recent' } = req.query;
+    const skip = (page - 1) * limit;
+
+    let sortOption = { createdAt: -1 };
+    if (sort === 'helpful') sortOption = { helpful: -1, createdAt: -1 };
+    else if (sort === 'rating_high') sortOption = { rating: -1, createdAt: -1 };
+    else if (sort === 'rating_low') sortOption = { rating: 1, createdAt: -1 };
+
+    const reviews = await Review.find({
+      productId,
+      status: 'approved'
+    })
+      .populate('user', 'name profilePicture')
+      .sort(sortOption)
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Review.countDocuments({
+      productId,
+      status: 'approved'
+    });
+
+    // Get summary with breakdown and average rating
+    const summary = await Review.getProductSummary(productId);
+
+    res.json({
+      success: true,
+      data: {
+        reviews,
+        summary,
+        pagination: {
+          current: parseInt(page),
+          pages: Math.ceil(total / limit),
+          total
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Get product reviews error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch reviews'
+    });
+  }
+};
+
+// Get reviews for a specific service
+exports.getServiceReviews = async (req, res) => {
+  try {
+    const { serviceId } = req.params;
+    const { page = 1, limit = 10, sort = 'recent' } = req.query;
+    const skip = (page - 1) * limit;
+
+    let sortOption = { createdAt: -1 };
+    if (sort === 'helpful') sortOption = { helpful: -1, createdAt: -1 };
+    else if (sort === 'rating_high') sortOption = { rating: -1, createdAt: -1 };
+    else if (sort === 'rating_low') sortOption = { rating: 1, createdAt: -1 };
+
+    const reviews = await Review.find({
+      serviceId,
+      status: 'approved'
+    })
+      .populate('user', 'name profilePicture')
+      .sort(sortOption)
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Review.countDocuments({
+      serviceId,
+      status: 'approved'
+    });
+
+    // Get summary with breakdown and average rating
+    const summary = await Review.getServiceSummary(serviceId);
+
+    res.json({
+      success: true,
+      data: {
+        reviews,
+        summary,
+        pagination: {
+          current: parseInt(page),
+          pages: Math.ceil(total / limit),
+          total
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Get service reviews error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch reviews'
     });
   }
 };
@@ -144,23 +244,26 @@ exports.createReview = async (req, res) => {
 // Get user's reviews
 exports.getUserReviews = async (req, res) => {
   try {
-    const { page = 1, limit = 10 } = req.query;
+    const userId = req.user._id;
+    const { page = 1, limit = 10, type } = req.query;
     const skip = (page - 1) * limit;
 
-    const reviews = await Review.find({ user: req.user._id })
-      .populate('user', 'name profileImage')
-      .populate({
-        path: 'referenceId',
-        populate: {
-          path: 'productItems.productId serviceItems.serviceId',
-          select: 'name image title'
-        }
-      })
+    const filter = { user: userId };
+    if (type && ['product', 'service'].includes(type)) {
+      filter.type = type;
+    }
+
+    const reviews = await Review.find(filter)
+      .populate([
+        { path: 'productId', select: 'name primaryImage' },
+        { path: 'serviceId', select: 'name image_url' },
+        { path: 'order', select: 'orderNumber' }
+      ])
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
 
-    const total = await Review.countDocuments({ user: req.user._id });
+    const total = await Review.countDocuments(filter);
 
     res.json({
       success: true,
@@ -183,89 +286,125 @@ exports.getUserReviews = async (req, res) => {
   }
 };
 
-// Get reviews for a specific item (product/service)
-exports.getReviewsForItem = async (req, res) => {
+// Get reviewable items from an order
+exports.getReviewableItems = async (req, res) => {
   try {
-    const { referenceType, referenceId } = req.params;
-    const { page = 1, limit = 10, sortBy = 'newest' } = req.query;
-    const skip = (page - 1) * limit;
+    const { orderId } = req.params;
+    const userId = req.user._id;
 
-    // Validate reference type
-    if (!['Order', 'Booking'].includes(referenceType)) {
-      return res.status(400).json({
+    const order = await Order.findOne({ _id: orderId, user: userId })
+      .populate('productItems.productId', 'name primaryImage')
+      .populate('serviceItems.serviceId', 'name image_url');
+
+    if (!order) {
+      return res.status(404).json({
         success: false,
-        message: 'Invalid reference type'
+        message: 'Order not found'
       });
     }
 
-    // Sort options
-    let sort = { createdAt: -1 }; // newest first
-    if (sortBy === 'oldest') {
-      sort = { createdAt: 1 };
-    } else if (sortBy === 'highest_rating') {
-      sort = { rating: -1, createdAt: -1 };
-    } else if (sortBy === 'lowest_rating') {
-      sort = { rating: 1, createdAt: -1 };
+    if (order.status !== 'delivered') {
+      return res.status(400).json({
+        success: false,
+        message: 'Order must be delivered to review items'
+      });
     }
 
-    const reviews = await Review.find({
-      referenceType,
-      referenceId,
-      status: 'approved'
-    })
-      .populate('user', 'name profileImage')
-      .sort(sort)
-      .skip(skip)
-      .limit(parseInt(limit));
-
-    const total = await Review.countDocuments({
-      referenceType,
-      referenceId,
-      status: 'approved'
+    // Get existing reviews for this order
+    const existingReviews = await Review.find({
+      user: userId,
+      order: orderId
     });
 
-    // Get average rating and distribution
-    const ratingStats = await Review.getAverageRating(referenceType, referenceId);
+    const reviewedProductIds = new Set(
+      existingReviews
+        .filter(r => r.productId)
+        .map(r => r.productId.toString())
+    );
+
+    const reviewedServiceIds = new Set(
+      existingReviews
+        .filter(r => r.serviceId)
+        .map(r => r.serviceId.toString())
+    );
+
+    // Build reviewable items list
+    const reviewableItems = [];
+
+    order.productItems.forEach(item => {
+      if (item.productId && !reviewedProductIds.has(item.productId._id.toString())) {
+        reviewableItems.push({
+          itemId: item.productId._id,
+          type: 'product',
+          name: item.productId.name,
+          image: item.productId.primaryImage,
+          price: item.price,
+          quantity: item.quantity,
+          reviewed: false
+        });
+      } else if (item.productId) {
+        reviewableItems.push({
+          itemId: item.productId._id,
+          type: 'product',
+          name: item.productId.name,
+          image: item.productId.primaryImage,
+          price: item.price,
+          quantity: item.quantity,
+          reviewed: true
+        });
+      }
+    });
+
+    order.serviceItems.forEach(item => {
+      if (item.serviceId && !reviewedServiceIds.has(item.serviceId._id.toString())) {
+        reviewableItems.push({
+          itemId: item.serviceId._id,
+          type: 'service',
+          name: item.serviceId.name,
+          image: item.serviceId.image_url,
+          price: item.price,
+          quantity: item.quantity,
+          reviewed: false
+        });
+      } else if (item.serviceId) {
+        reviewableItems.push({
+          itemId: item.serviceId._id,
+          type: 'service',
+          name: item.serviceId.name,
+          image: item.serviceId.image_url,
+          price: item.price,
+          quantity: item.quantity,
+          reviewed: true
+        });
+      }
+    });
 
     res.json({
       success: true,
       data: {
-        reviews,
-        ratingStats,
-        pagination: {
-          current: parseInt(page),
-          pages: Math.ceil(total / limit),
-          total
-        }
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        items: reviewableItems
       }
     });
 
   } catch (error) {
-    console.error('Get reviews for item error:', error);
+    console.error('Get reviewable items error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch reviews'
+      message: 'Failed to fetch reviewable items'
     });
   }
 };
 
-// Update user's review
+// Update review
 exports.updateReview = async (req, res) => {
   try {
-    const { id } = req.params;
-    const {
-      rating,
-      comment,
-      serviceQuality,
-      deliverySpeed,
-      valueForMoney,
-      wouldRecommend
-    } = req.body;
+    const { reviewId } = req.params;
+    const { rating, comment } = req.body;
+    const userId = req.user._id;
 
-    const review = await Review.findOne({
-      _id: id,
-      user: req.user._id
-    });
+    const review = await Review.findOne({ _id: reviewId, user: userId });
 
     if (!review) {
       return res.status(404).json({
@@ -274,8 +413,7 @@ exports.updateReview = async (req, res) => {
       });
     }
 
-    // Update fields if provided
-    if (rating !== undefined) {
+    if (rating) {
       if (rating < 1 || rating > 5) {
         return res.status(400).json({
           success: false,
@@ -286,33 +424,16 @@ exports.updateReview = async (req, res) => {
     }
 
     if (comment !== undefined) {
-      review.comment = comment.trim();
-    }
-
-    if (serviceQuality !== undefined) {
-      review.serviceQuality = serviceQuality;
-    }
-
-    if (deliverySpeed !== undefined) {
-      review.deliverySpeed = deliverySpeed;
-    }
-
-    if (valueForMoney !== undefined) {
-      review.valueForMoney = valueForMoney;
-    }
-
-    if (wouldRecommend !== undefined) {
-      review.wouldRecommend = wouldRecommend;
-    }
-
-    // Handle new image uploads
-    if (req.files && req.files.length > 0) {
-      const newImages = req.files.map(file => file.filename);
-      review.images = [...(review.images || []), ...newImages];
+      review.comment = comment;
     }
 
     await review.save();
-    await review.populate('user', 'name profileImage');
+
+    await review.populate([
+      { path: 'user', select: 'name profilePicture' },
+      { path: 'productId', select: 'name primaryImage' },
+      { path: 'serviceId', select: 'name image_url' }
+    ]);
 
     res.json({
       success: true,
@@ -329,15 +450,13 @@ exports.updateReview = async (req, res) => {
   }
 };
 
-// Delete user's review
+// Delete review
 exports.deleteReview = async (req, res) => {
   try {
-    const { id } = req.params;
+    const { reviewId } = req.params;
+    const userId = req.user._id;
 
-    const review = await Review.findOneAndDelete({
-      _id: id,
-      user: req.user._id
-    });
+    const review = await Review.findOne({ _id: reviewId, user: userId });
 
     if (!review) {
       return res.status(404).json({
@@ -345,6 +464,14 @@ exports.deleteReview = async (req, res) => {
         message: 'Review not found'
       });
     }
+
+    // Delete media from S3
+    if (review.media && review.media.length > 0) {
+      const keys = review.media.map(m => m.key);
+      await deleteMultipleFromS3(keys);
+    }
+
+    await review.remove();
 
     res.json({
       success: true,
@@ -360,203 +487,67 @@ exports.deleteReview = async (req, res) => {
   }
 };
 
-// Admin: Get all reviews
-exports.getAllReviews = async (req, res) => {
+// Vote review as helpful
+exports.voteReview = async (req, res) => {
   try {
-    const { 
-      page = 1, 
-      limit = 20, 
-      status = 'all', 
-      referenceType = 'all',
-      sortBy = 'newest' 
-    } = req.query;
-    const skip = (page - 1) * limit;
+    const { reviewId } = req.params;
+    const { vote } = req.body; // 'up' or 'down'
+    const userId = req.user._id;
 
-    // Build filter
-    let filter = {};
-    if (status !== 'all') {
-      filter.status = status;
-    }
-    if (referenceType !== 'all') {
-      filter.referenceType = referenceType;
+    if (!['up', 'down'].includes(vote)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vote must be "up" or "down"'
+      });
     }
 
-    // Sort options
-    let sort = { createdAt: -1 };
-    if (sortBy === 'oldest') {
-      sort = { createdAt: 1 };
-    } else if (sortBy === 'highest_rating') {
-      sort = { rating: -1, createdAt: -1 };
-    } else if (sortBy === 'lowest_rating') {
-      sort = { rating: 1, createdAt: -1 };
+    const review = await Review.findById(reviewId);
+
+    if (!review) {
+      return res.status(404).json({
+        success: false,
+        message: 'Review not found'
+      });
     }
 
-    const reviews = await Review.find(filter)
-      .populate('user', 'name email profileImage')
-      .populate({
-        path: 'referenceId',
-        populate: {
-          path: 'productItems.productId serviceItems.serviceId',
-          select: 'name image title'
-        }
-      })
-      .populate('adminResponse.respondedBy', 'name')
-      .sort(sort)
-      .skip(skip)
-      .limit(parseInt(limit));
+    // Check if user already voted
+    const existingVoteIndex = review.helpfulVotes.findIndex(
+      v => v.user.toString() === userId.toString()
+    );
 
-    const total = await Review.countDocuments(filter);
-
-    // Get statistics
-    const stats = await Review.aggregate([
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 },
-          avgRating: { $avg: '$rating' }
-        }
+    if (existingVoteIndex !== -1) {
+      const existingVote = review.helpfulVotes[existingVoteIndex];
+      
+      if (existingVote.vote === vote) {
+        // Remove vote if clicking same button
+        review.helpfulVotes.splice(existingVoteIndex, 1);
+        review.helpful = vote === 'up' ? review.helpful - 1 : review.helpful + 1;
+      } else {
+        // Change vote
+        existingVote.vote = vote;
+        review.helpful = vote === 'up' ? review.helpful + 2 : review.helpful - 2;
       }
-    ]);
+    } else {
+      // Add new vote
+      review.helpfulVotes.push({ user: userId, vote });
+      review.helpful = vote === 'up' ? review.helpful + 1 : review.helpful - 1;
+    }
+
+    await review.save();
 
     res.json({
       success: true,
+      message: 'Vote recorded',
       data: {
-        reviews,
-        stats,
-        pagination: {
-          current: parseInt(page),
-          pages: Math.ceil(total / limit),
-          total
-        }
+        helpful: review.helpful
       }
     });
 
   } catch (error) {
-    console.error('Get all reviews error:', error);
+    console.error('Vote review error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch reviews'
+      message: 'Failed to vote review'
     });
   }
 };
-
-// Admin: Respond to review
-exports.respondToReview = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { comment } = req.body;
-
-    if (!comment || !comment.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Response comment is required'
-      });
-    }
-
-    const review = await Review.findById(id);
-    if (!review) {
-      return res.status(404).json({
-        success: false,
-        message: 'Review not found'
-      });
-    }
-
-    review.adminResponse = {
-      comment: comment.trim(),
-      respondedAt: new Date(),
-      respondedBy: req.user._id
-    };
-
-    await review.save();
-    await review.populate([
-      { path: 'user', select: 'name profileImage' },
-      { path: 'adminResponse.respondedBy', select: 'name' }
-    ]);
-
-    res.json({
-      success: true,
-      message: 'Response added successfully',
-      data: review
-    });
-
-  } catch (error) {
-    console.error('Respond to review error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to add response'
-    });
-  }
-};
-
-// Admin: Update review status
-exports.updateReviewStatus = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-
-    const validStatuses = ['pending', 'approved', 'rejected'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid status'
-      });
-    }
-
-    const review = await Review.findById(id);
-    if (!review) {
-      return res.status(404).json({
-        success: false,
-        message: 'Review not found'
-      });
-    }
-
-    review.status = status;
-    await review.save();
-
-    res.json({
-      success: true,
-      message: 'Review status updated successfully',
-      data: review
-    });
-
-  } catch (error) {
-    console.error('Update review status error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update review status'
-    });
-  }
-};
-
-// Get reviews with images for a product/service (for display on product pages)
-exports.getItemReviewsWithImages = async (req, res) => {
-  try {
-    const { referenceType, referenceId } = req.params;
-    const { limit = 5 } = req.query;
-
-    const reviews = await Review.find({
-      referenceType,
-      referenceId,
-      status: 'approved',
-      images: { $exists: true, $ne: [] }
-    })
-      .populate('user', 'name profileImage')
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit));
-
-    res.json({
-      success: true,
-      data: reviews
-    });
-
-  } catch (error) {
-    console.error('Get reviews with images error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch reviews'
-    });
-  }
-};
-
-// Middleware for handling image uploads
-exports.uploadImages = upload.array('images', 5); // Max 5 images per review

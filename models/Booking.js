@@ -1,4 +1,4 @@
-// server/models/Booking.js - Fixed service bookings model
+// server/models/Booking.js - Enhanced with OTP functionality
 const mongoose = require('mongoose');
 
 const bookingSchema = new mongoose.Schema({
@@ -14,7 +14,7 @@ const bookingSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'confirmed', 'rejected', 'completed', 'cancelled'],
+    enum: ['pending', 'confirmed', 'in_progress', 'completed', 'cancelled', 'rejected'],
     default: 'pending'
   },
   // Service items
@@ -82,6 +82,30 @@ const bookingSchema = new mongoose.Schema({
     default: 'At Home'
   },
   
+  // OTP for service verification
+  serviceOtp: {
+    type: String,
+    default: null
+  },
+  otpGeneratedAt: {
+    type: Date,
+    default: null
+  },
+  otpVerifiedAt: {
+    type: Date,
+    default: null
+  },
+  otpExpiresAt: {
+    type: Date,
+    default: null
+  },
+  
+  // Service timing
+  serviceStartTime: {
+    type: String,
+    default: null
+  },
+  
   // Payment details
   paymentMethod: {
     type: String,
@@ -114,21 +138,28 @@ const bookingSchema = new mongoose.Schema({
   // Status timestamps
   confirmedAt: Date,
   rejectedAt: Date,
+  serviceStartedAt: Date,
   completedAt: Date,
   cancelledAt: Date,
   
   // Review and rating
-  rating: {
-    type: Number,
-    min: 1,
-    max: 5
+  canReview: {
+    type: Boolean,
+    default: false
   },
   review: {
-    type: String,
-    trim: true,
-    maxlength: 1000
-  },
-  reviewedAt: Date
+    rating: {
+      type: Number,
+      min: 1,
+      max: 5
+    },
+    comment: {
+      type: String,
+      trim: true,
+      maxlength: 1000
+    },
+    createdAt: Date
+  }
 }, {
   timestamps: true
 });
@@ -139,6 +170,7 @@ bookingSchema.index({ bookingNumber: 1 }, { unique: true });
 bookingSchema.index({ status: 1 });
 bookingSchema.index({ 'services.selectedDate': 1 });
 bookingSchema.index({ createdAt: -1 });
+bookingSchema.index({ serviceOtp: 1 });
 
 // Generate unique booking number - STATIC METHOD
 bookingSchema.statics.generateBookingNumber = async function() {
@@ -147,12 +179,10 @@ bookingSchema.statics.generateBookingNumber = async function() {
   const maxAttempts = 10;
   
   while (attempts < maxAttempts) {
-    // Generate a more readable booking number
-    const timestamp = Date.now().toString().slice(-6); // Last 6 digits of timestamp
+    const timestamp = Date.now().toString().slice(-6);
     const random = Math.floor(Math.random() * 9999).toString().padStart(4, '0');
     bookingNumber = `BKG${timestamp}${random}`;
     
-    // Check if this booking number already exists
     const existingBooking = await this.findOne({ bookingNumber });
     if (!existingBooking) {
       return bookingNumber;
@@ -161,15 +191,45 @@ bookingSchema.statics.generateBookingNumber = async function() {
     attempts++;
   }
   
-  // Fallback: use count + timestamp if all random attempts failed
   const count = await this.countDocuments();
   const timestamp = Date.now().toString().slice(-6);
   return `BKG${timestamp}${(count + 1).toString().padStart(4, '0')}`;
 };
 
+// Generate 6-digit OTP
+bookingSchema.methods.generateOTP = function() {
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  this.serviceOtp = otp;
+  this.otpGeneratedAt = new Date();
+  this.otpExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+  return otp;
+};
+
+// Verify OTP
+bookingSchema.methods.verifyOTP = function(otp) {
+  if (!this.serviceOtp) {
+    return { valid: false, message: 'No OTP generated for this booking' };
+  }
+  
+  if (this.serviceOtp !== otp.toString()) {
+    return { valid: false, message: 'Invalid OTP' };
+  }
+  
+  if (this.otpExpiresAt && new Date() > this.otpExpiresAt) {
+    return { valid: false, message: 'OTP has expired' };
+  }
+  
+  return { valid: true, message: 'OTP verified successfully' };
+};
+
+// Check if OTP is valid (not expired)
+bookingSchema.methods.isOTPValid = function() {
+  if (!this.serviceOtp || !this.otpExpiresAt) return false;
+  return new Date() <= this.otpExpiresAt;
+};
+
 // Pre-save middleware to generate booking number if not provided
 bookingSchema.pre('save', async function(next) {
-  // Only generate booking number if it's a new document and doesn't have one
   if (this.isNew && !this.bookingNumber) {
     try {
       this.bookingNumber = await this.constructor.generateBookingNumber();
@@ -191,12 +251,6 @@ bookingSchema.virtual('totalDuration').get(function() {
   }, 0);
 });
 
-// Virtual for booking age in days
-bookingSchema.virtual('bookingAge').get(function() {
-  const ageInMs = Date.now() - this.createdAt.getTime();
-  return Math.floor(ageInMs / (1000 * 60 * 60 * 24));
-});
-
 // Instance methods
 bookingSchema.methods.canBeCancelled = function() {
   return ['pending', 'confirmed'].includes(this.status);
@@ -206,7 +260,6 @@ bookingSchema.methods.canBeModified = function() {
   return this.status === 'pending';
 };
 
-// Method to get formatted booking number for display
 bookingSchema.methods.getFormattedBookingNumber = function() {
   if (!this.bookingNumber) return 'N/A';
   return this.bookingNumber.replace(/(.{3})(.{6})(.{4})/, '$1-$2-$3');

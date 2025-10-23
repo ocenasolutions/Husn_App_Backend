@@ -1,4 +1,4 @@
-// server/models/Order.js - Enhanced with Razorpay payment fields
+// server/models/Order.js - Fixed OTP generation timing
 const mongoose = require('mongoose');
 
 const orderSchema = new mongoose.Schema({
@@ -21,6 +21,19 @@ const orderSchema = new mongoose.Schema({
     type: String,
     enum: ['placed', 'confirmed', 'shipped', 'out_for_delivery', 'delivered', 'cancelled'],
     default: 'placed'
+  },
+  // Service OTP - generated immediately for service orders
+  serviceOtp: {
+    type: String,
+    default: null
+  },
+  serviceStartedAt: {
+    type: Date,
+    default: null
+  },
+  serviceOtpVerified: {
+    type: Boolean,
+    default: false
   },
   // Service items
   serviceItems: [{
@@ -90,24 +103,10 @@ const orderSchema = new mongoose.Schema({
     enum: ['pending', 'completed', 'failed', 'refunded'],
     default: 'pending'
   },
-  // Razorpay payment details
-  razorpayOrderId: {
-    type: String,
-    default: null
-  },
-  razorpayPaymentId: {
-    type: String,
-    default: null
-  },
-  razorpaySignature: {
-    type: String,
-    default: null
-  },
-  // Refund details
-  refundId: {
-    type: String,
-    default: null
-  },
+  razorpayOrderId: String,
+  razorpayPaymentId: String,
+  razorpaySignature: String,
+  refundId: String,
   refundAmount: {
     type: Number,
     default: 0
@@ -147,6 +146,7 @@ const orderSchema = new mongoose.Schema({
   trackingId: String,
   courier: String,
   estimatedDelivery: Date,
+  estimatedServiceTime: String,
   // Status timestamps
   confirmedAt: Date,
   shippedAt: Date,
@@ -182,7 +182,12 @@ orderSchema.statics.generateOrderNumber = async function() {
   return `ORD${timestamp}${(count + 1).toString().padStart(4, '0')}`;
 };
 
-// Pre-save middleware to generate order number if not set
+// Static method to generate 6-digit OTP
+orderSchema.statics.generateServiceOtp = function() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+// Pre-save middleware to generate order number
 orderSchema.pre('save', async function(next) {
   if (!this.orderNumber) {
     try {
@@ -195,7 +200,20 @@ orderSchema.pre('save', async function(next) {
   next();
 });
 
-// Generate tracking ID when status changes to shipped
+// Generate OTP immediately for NEW service orders
+orderSchema.pre('save', function(next) {
+  // Only for new documents (not updates)
+  if (this.isNew) {
+    const hasServices = this.serviceItems && this.serviceItems.length > 0;
+    if (hasServices && !this.serviceOtp) {
+      this.serviceOtp = this.constructor.generateServiceOtp();
+      console.log('✅ Generated service OTP for new order:', this.serviceOtp);
+    }
+  }
+  next();
+});
+
+// Generate tracking ID when shipped
 orderSchema.pre('save', function(next) {
   if (this.isModified('status') && this.status === 'shipped' && !this.trackingId) {
     const timestamp = Date.now().toString().slice(-6);
@@ -205,7 +223,7 @@ orderSchema.pre('save', function(next) {
   next();
 });
 
-// Auto-update payment status for COD orders when delivered
+// Auto-update payment status for COD when delivered
 orderSchema.pre('save', function(next) {
   if (this.isModified('status') && this.status === 'delivered' && this.paymentMethod === 'cod') {
     this.paymentStatus = 'completed';
@@ -213,75 +231,27 @@ orderSchema.pre('save', function(next) {
   next();
 });
 
-// Indexes for better performance
+// Indexes
 orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ orderNumber: 1 }, { unique: true });
 orderSchema.index({ status: 1 });
 orderSchema.index({ type: 1 });
 orderSchema.index({ createdAt: -1 });
-orderSchema.index({ razorpayOrderId: 1 });
-orderSchema.index({ razorpayPaymentId: 1 });
 
-// Virtual for order age in days
-orderSchema.virtual('orderAge').get(function() {
-  const ageInMs = Date.now() - this.createdAt.getTime();
-  return Math.floor(ageInMs / (1000 * 60 * 60 * 24));
-});
-
-// Virtual for total items count
+// Virtual for total items
 orderSchema.virtual('totalItems').get(function() {
   const serviceItemsCount = this.serviceItems.reduce((total, item) => total + item.quantity, 0);
   const productItemsCount = this.productItems.reduce((total, item) => total + item.quantity, 0);
   return serviceItemsCount + productItemsCount;
 });
 
-// Instance method to check if order can be cancelled
+// Instance methods
 orderSchema.methods.canBeCancelled = function() {
   return ['placed', 'confirmed'].includes(this.status);
 };
 
-// Instance method to check if order can be refunded
-orderSchema.methods.canBeRefunded = function() {
-  return this.paymentMethod === 'online' && 
-         this.paymentStatus === 'completed' && 
-         this.razorpayPaymentId &&
-         this.refundStatus === 'none';
-};
-
-// Static method to get orders summary for user
-orderSchema.statics.getOrdersSummary = async function(userId) {
-  try {
-    const summary = await this.aggregate([
-      { $match: { user: new mongoose.Types.ObjectId(userId) } },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 },
-          totalAmount: { $sum: '$totalAmount' }
-        }
-      }
-    ]);
-
-    const result = {
-      total: 0,
-      totalAmount: 0,
-      byStatus: {}
-    };
-
-    summary.forEach(item => {
-      result.total += item.count;
-      result.totalAmount += item.totalAmount;
-      result.byStatus[item._id] = {
-        count: item.count,
-        totalAmount: item.totalAmount
-      };
-    });
-
-    return result;
-  } catch (error) {
-    console.error('Error getting orders summary:', error);
-    throw error;
-  }
+orderSchema.methods.hasServices = function() {
+  return this.serviceItems && this.serviceItems.length > 0;
 };
 
 const Order = mongoose.model('Order', orderSchema);

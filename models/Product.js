@@ -75,6 +75,19 @@ const productSchema = new mongoose.Schema({
     default: 0
   },
   
+  rating: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 5
+  },
+  
+  reviewCount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  
   tags: [{
     type: String,
     trim: true,
@@ -91,7 +104,6 @@ const productSchema = new mongoose.Schema({
     default: true
   },
 
-  // Offer-related fields
   offerActive: {
     type: Boolean,
     default: false

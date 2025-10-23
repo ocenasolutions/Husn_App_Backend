@@ -6,17 +6,11 @@ const authMiddleware = require('../middlewares/authMiddleware');
 const adminMiddleware = require('../middlewares/adminMiddleware');
 const { uploadToS3 } = require('../config/s3Config');
 
-// Middleware to conditionally handle file uploads
 const conditionalUpload = (req, res, next) => {
-  // Use multer to handle the multipart form data first
   uploadToS3.single('image')(req, res, (err) => {
     if (err) {
       return next(err);
     }
-    
-    // After multer processes the request, req.body is available
-    // If no file was uploaded but imageUrl is provided, that's fine
-    // The controller will handle using either req.file or req.body.imageUrl
     next();
   });
 };

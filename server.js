@@ -23,6 +23,7 @@ const reviewRoutes = require('./routes/reviewRoutes');
 const helpRoutes = require('./routes/helpRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const chatRoutes = require('./routes/chatRoutes');
+const professionalRoutes = require('./routes/professionalRoutes'); 
 
 const app = express();
 
@@ -71,7 +72,7 @@ app.use('/api/reviews', reviewRoutes);
 app.use('/api/help', helpRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/chats', chatRoutes);
-
+app.use('/api/professionals', professionalRoutes);
 
 app.get('/', (req, res) => {
   res.json({ message: 'Booking System API Server is running!' });

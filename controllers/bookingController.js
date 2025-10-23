@@ -1,12 +1,7 @@
-// server/controllers/bookingController.js - Enhanced with OTP and admin features + NOTIFICATIONS
+// server/controllers/bookingController.js - Enhanced with OTP and notifications
 const Booking = require('../models/Booking');
 const Service = require('../models/Service');
-const Notification = require('../models/Notification'); // ✅ ADDED
-
-// Helper function to generate 6-digit OTP
-const generateOTP = () => {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-};
+const Notification = require('../models/Notification');
 
 // Create a new service booking
 exports.createBooking = async (req, res) => {
@@ -97,13 +92,12 @@ exports.createBooking = async (req, res) => {
     await booking.populate('services.service');
     await booking.populate('user', 'name email phone');
 
-    // ✅ CREATE ADMIN NOTIFICATION FOR NEW BOOKING
+    // Create admin notification for new booking
     try {
       await Notification.createBookingNotification(booking);
       console.log('✅ Booking notification created for admin');
     } catch (notifError) {
       console.error('⚠️ Failed to create booking notification:', notifError);
-      // Don't fail the booking creation if notification fails
     }
 
     res.status(201).json({
@@ -125,13 +119,19 @@ exports.createBooking = async (req, res) => {
 // Get user's bookings
 exports.getUserBookings = async (req, res) => {
   try {
+    console.log('🔍 Fetching bookings for user:', req.user._id);
+    
     const { page = 1, limit = 10, status } = req.query;
     const skip = (page - 1) * limit;
 
     const filter = { user: req.user._id };
+    
     if (status && status !== 'all') {
       filter.status = status;
+      console.log('📌 Filtering by status:', status);
     }
+
+    console.log('🔎 Query filter:', JSON.stringify(filter));
 
     const bookings = await Booking.find(filter)
       .populate('services.service')
@@ -141,6 +141,8 @@ exports.getUserBookings = async (req, res) => {
       .limit(parseInt(limit));
 
     const total = await Booking.countDocuments(filter);
+
+    console.log('✅ Found bookings:', bookings.length, 'Total:', total);
 
     res.json({
       success: true,
@@ -153,10 +155,11 @@ exports.getUserBookings = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Get user bookings error:', error);
+    console.error('❌ Get user bookings error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch bookings'
+      message: 'Failed to fetch bookings',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
@@ -261,7 +264,7 @@ exports.getBookingById = async (req, res) => {
   }
 };
 
-// Update booking status (Admin only)
+// Update booking status (Admin only) - WITH OTP GENERATION
 exports.updateBookingStatus = async (req, res) => {
   try {
     const { id } = req.params;
@@ -276,7 +279,7 @@ exports.updateBookingStatus = async (req, res) => {
       });
     }
 
-    const booking = await Booking.findById(id);
+    const booking = await Booking.findById(id).populate('user', 'name email phone');
     if (!booking) {
       return res.status(404).json({
         success: false,
@@ -285,27 +288,54 @@ exports.updateBookingStatus = async (req, res) => {
     }
 
     const now = new Date();
+    let otpGenerated = false;
+    
     switch (status) {
       case 'confirmed':
         booking.confirmedAt = now;
         // Generate OTP when booking is confirmed
-        booking.serviceOtp = generateOTP();
-        booking.otpGeneratedAt = now;
+        const otp = booking.generateOTP();
+        otpGenerated = true;
+        
+        console.log('🔐 OTP Generated for booking:', booking.bookingNumber, 'OTP:', otp);
+        
+        // Create notification for user with OTP
+        try {
+          await Notification.create({
+            user: booking.user._id,
+            type: 'booking_confirmed',
+            title: 'Booking Confirmed!',
+            message: `Your booking #${booking.bookingNumber} has been confirmed. Your service OTP is: ${otp}. Please share this with the service provider when they arrive.`,
+            data: {
+              bookingId: booking._id,
+              bookingNumber: booking.bookingNumber,
+              otp: otp,
+              status: 'confirmed'
+            }
+          });
+          console.log('✅ OTP notification sent to user');
+        } catch (notifError) {
+          console.error('⚠️ Failed to send OTP notification:', notifError);
+        }
         break;
+        
       case 'rejected':
         booking.rejectedAt = now;
         if (rejectionReason) {
           booking.rejectionReason = rejectionReason;
         }
         break;
+        
       case 'in_progress':
         booking.serviceStartedAt = now;
         break;
+        
       case 'completed':
         booking.completedAt = now;
         booking.paymentStatus = 'completed';
         booking.canReview = true;
         break;
+        
       case 'cancelled':
         booking.cancelledAt = now;
         break;
@@ -319,11 +349,20 @@ exports.updateBookingStatus = async (req, res) => {
     await booking.save();
     await booking.populate('services.service');
 
-    res.json({
+    const response = {
       success: true,
-      message: 'Booking status updated successfully',
+      message: otpGenerated 
+        ? 'Booking confirmed successfully. OTP has been sent to the customer.' 
+        : 'Booking status updated successfully',
       data: booking
-    });
+    };
+
+    if (otpGenerated) {
+      response.otp = booking.serviceOtp;
+      response.otpMessage = 'OTP has been generated and sent to customer';
+    }
+
+    res.json(response);
 
   } catch (error) {
     console.error('Update booking status error:', error);
@@ -386,7 +425,7 @@ exports.startService = async (req, res) => {
       });
     }
 
-    const booking = await Booking.findById(id);
+    const booking = await Booking.findById(id).populate('user', 'name email phone');
     if (!booking) {
       return res.status(404).json({
         success: false,
@@ -401,37 +440,41 @@ exports.startService = async (req, res) => {
       });
     }
 
-    if (!booking.serviceOtp) {
-      return res.status(400).json({
-        success: false,
-        message: 'No OTP generated for this booking'
-      });
-    }
-
-    if (booking.serviceOtp !== otp) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid OTP'
-      });
-    }
-
-    // Check if OTP is expired (valid for 24 hours)
-    const otpAge = Date.now() - new Date(booking.otpGeneratedAt).getTime();
-    const twentyFourHours = 24 * 60 * 60 * 1000;
+    // Verify OTP using the model method
+    const verification = booking.verifyOTP(otp);
     
-    if (otpAge > twentyFourHours) {
+    if (!verification.valid) {
       return res.status(400).json({
         success: false,
-        message: 'OTP has expired'
+        message: verification.message
       });
     }
 
+    // Update booking status to in_progress
     booking.status = 'in_progress';
     booking.serviceStartedAt = new Date();
     booking.otpVerifiedAt = new Date();
     await booking.save();
 
     await booking.populate('services.service');
+
+    // Create notification for user
+    try {
+      await Notification.create({
+        user: booking.user._id,
+        type: 'service_started',
+        title: 'Service Started',
+        message: `Your service for booking #${booking.bookingNumber} has been started.`,
+        data: {
+          bookingId: booking._id,
+          bookingNumber: booking.bookingNumber,
+          status: 'in_progress'
+        }
+      });
+      console.log('✅ Service started notification sent to user');
+    } catch (notifError) {
+      console.error('⚠️ Failed to send service started notification:', notifError);
+    }
 
     res.json({
       success: true,

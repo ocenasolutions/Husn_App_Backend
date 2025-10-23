@@ -50,9 +50,14 @@ const serviceSchema = new mongoose.Schema({
   },
   rating: {
     type: Number,
-    min: [1, 'Rating must be at least 1'],
-    max: [5, 'Rating cannot exceed 5'],
-    default: 4.5
+    default: 0,
+    min: 0,
+    max: 5
+  },
+  reviewCount: {
+    type: Number,
+    default: 0,
+    min: 0
   },
   totalBookings: {
     type: Number,
@@ -112,8 +117,8 @@ const serviceSchema = new mongoose.Schema({
       type: String,
       enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
     },
-    startTime: String, // format: "09:00"
-    endTime: String    // format: "18:00"
+    startTime: String,
+    endTime: String    
   }],
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
