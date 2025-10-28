@@ -76,7 +76,7 @@ const generateOTP = () => {
 const sendOTPEmail = async (email, name, otp) => {
   console.log(`Attempting to send OTP ${otp} to ${email}`);
   
-  const subject = 'Your OTP Code - Auth App';
+  const subject = 'Your OTP Code - Husn Salon';
   const htmlContent = `
     <!DOCTYPE html>
     <html>
@@ -148,7 +148,7 @@ const sendOTPEmail = async (email, name, otp) => {
     <body>
       <div class="container">
         <div class="header">
-          <h1>Auth App</h1>
+          <h1>Husn App</h1>
         </div>
         <div class="content">
           <h2>Hello ${name}!</h2>
@@ -160,7 +160,7 @@ const sendOTPEmail = async (email, name, otp) => {
           <p>If you didn't request this code, please ignore this email and ensure your account is secure.</p>
           
           <div class="footer">
-            <p>Thank you for using Auth App!</p>
+            <p>Thank you for using Husn App!</p>
             <p>This is an automated message, please do not reply.</p>
           </div>
         </div>
