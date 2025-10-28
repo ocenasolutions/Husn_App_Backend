@@ -1,72 +1,27 @@
 // server/controllers/professionalController.js
 const Professional = require('../models/Professional');
-const Service = require('../models/Service');
-const { deleteFromS3 } = require('../config/s3Config');
 
-// Get all professionals (Public)
+// Get all professionals (with optional category filter)
 exports.getAllProfessionals = async (req, res) => {
   try {
-    const {
-      page = 1,
-      limit = 20,
-      serviceId,
-      specialization,
-      search,
-      sortBy = 'createdAt',
-      sortOrder = 'desc',
-      isAvailable
-    } = req.query;
-
-    const query = { isActive: true };
-
-    // Filter by service
-    if (serviceId) {
-      query.services = serviceId;
+    const { category, active = 'true' } = req.query;
+    
+    const query = {};
+    
+    if (active === 'true') {
+      query.isActive = true;
     }
-
-    // Filter by specialization
-    if (specialization) {
-      query.specialization = { $in: [specialization] };
+    
+    if (category) {
+      query.specializations = category;
     }
-
-    // Filter by availability
-    if (isAvailable !== undefined) {
-      query.isAvailable = isAvailable === 'true';
-    }
-
-    // Add search functionality
-    if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { specialization: { $in: [new RegExp(search, 'i')] } },
-        { role: { $regex: search, $options: 'i' } }
-      ];
-    }
-
-    const sortOptions = {};
-    sortOptions[sortBy] = sortOrder === 'desc' ? -1 : 1;
-
-    const skip = (page - 1) * limit;
 
     const professionals = await Professional.find(query)
-      .populate('services', 'name category')
-      .populate('createdBy', 'name email')
-      .sort(sortOptions)
-      .skip(skip)
-      .limit(parseInt(limit));
-
-    const total = await Professional.countDocuments(query);
+      .sort({ rating: -1, totalBookings: -1 });
 
     res.json({
       success: true,
-      data: professionals,
-      pagination: {
-        currentPage: parseInt(page),
-        totalPages: Math.ceil(total / limit),
-        totalProfessionals: total,
-        hasNext: page * limit < total,
-        hasPrev: page > 1
-      }
+      data: professionals
     });
 
   } catch (error) {
@@ -78,26 +33,43 @@ exports.getAllProfessionals = async (req, res) => {
   }
 };
 
-// Get professionals by service (Public)
-exports.getProfessionalsByService = async (req, res) => {
+// Get professionals by service categories
+exports.getProfessionalsByServices = async (req, res) => {
   try {
-    const { serviceId } = req.params;
+    const { serviceIds } = req.query;
+    
+    if (!serviceIds) {
+      return res.status(400).json({
+        success: false,
+        message: 'Service IDs are required'
+      });
+    }
 
+    const Service = require('../models/Service');
+    
+    // Get all services to find their categories
+    const serviceIdArray = serviceIds.split(',');
+    const services = await Service.find({ 
+      _id: { $in: serviceIdArray } 
+    }).select('category');
+
+    // Extract unique categories
+    const categories = [...new Set(services.map(s => s.category))];
+
+    // Find professionals matching these categories
     const professionals = await Professional.find({
-      isActive: true,
-      isAvailable: true,
-      services: serviceId
-    })
-      .populate('services', 'name category')
-      .sort({ rating: -1, totalBookings: -1 });
+      specializations: { $in: categories },
+      isActive: true
+    }).sort({ rating: -1, totalBookings: -1 });
 
     res.json({
       success: true,
-      data: professionals
+      data: professionals,
+      categories
     });
 
   } catch (error) {
-    console.error('Get professionals by service error:', error);
+    console.error('Get professionals by services error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch professionals'
@@ -105,62 +77,26 @@ exports.getProfessionalsByService = async (req, res) => {
   }
 };
 
-// Get single professional (Public)
-exports.getProfessionalById = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const professional = await Professional.findOne({ _id: id, isActive: true })
-      .populate('services', 'name category price duration')
-      .populate('createdBy', 'name email');
-
-    if (!professional) {
-      return res.status(404).json({
-        success: false,
-        message: 'Professional not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      data: professional
-    });
-
-  } catch (error) {
-    console.error('Get professional error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch professional'
-    });
-  }
-};
-
-// Create new professional (Admin only)
+// Create professional (Admin only)
 exports.createProfessional = async (req, res) => {
   try {
     const {
       name,
       email,
-      phoneNumber,
+      phone,
       role,
-      specialization,
-      services,
+      specializations,
       experience,
-      bio,
-      availableSlots,
-      certifications,
-      profileImageUrl
+      bio
     } = req.body;
 
-    // Validation
-    if (!name || !email || !phoneNumber) {
+    if (!name || !email || !phone || !specializations) {
       return res.status(400).json({
         success: false,
-        message: 'Name, email, and phone number are required'
+        message: 'Name, email, phone, and specializations are required'
       });
     }
 
-    // Check for duplicate email
     const existingProfessional = await Professional.findOne({ email });
     if (existingProfessional) {
       return res.status(400).json({
@@ -169,44 +105,19 @@ exports.createProfessional = async (req, res) => {
       });
     }
 
-    const professionalData = {
+    const professional = new Professional({
       name,
       email,
-      phoneNumber,
-      createdBy: req.user._id
-    };
+      phone,
+      role: role || 'Professional',
+      specializations: Array.isArray(specializations) 
+        ? specializations 
+        : specializations.split(',').map(s => s.trim()),
+      experience: experience || 0,
+      bio: bio || ''
+    });
 
-    // Optional fields
-    if (role) professionalData.role = role;
-    if (specialization) {
-      professionalData.specialization = Array.isArray(specialization) 
-        ? specialization 
-        : specialization.split(',').map(s => s.trim());
-    }
-    if (services) {
-      professionalData.services = Array.isArray(services) 
-        ? services 
-        : JSON.parse(services);
-    }
-    if (experience) professionalData.experience = parseInt(experience);
-    if (bio) professionalData.bio = bio;
-    if (availableSlots) professionalData.availableSlots = JSON.parse(availableSlots);
-    if (certifications) professionalData.certifications = JSON.parse(certifications);
-
-    // Handle image upload or URL
-    if (req.file) {
-      professionalData.profileImage = req.file.location;
-      professionalData.imageKey = req.file.key;
-    } else if (profileImageUrl && profileImageUrl.trim()) {
-      professionalData.profileImage = profileImageUrl.trim();
-      professionalData.imageKey = null;
-    }
-
-    const professional = new Professional(professionalData);
     await professional.save();
-
-    // Populate the professional data before sending response
-    await professional.populate('services', 'name category');
 
     res.status(201).json({
       success: true,
@@ -230,17 +141,12 @@ exports.updateProfessional = async (req, res) => {
     const {
       name,
       email,
-      phoneNumber,
+      phone,
       role,
-      specialization,
-      services,
+      specializations,
       experience,
       bio,
-      isActive,
-      isAvailable,
-      availableSlots,
-      certifications,
-      profileImageUrl
+      isActive
     } = req.body;
 
     const professional = await Professional.findById(id);
@@ -251,70 +157,20 @@ exports.updateProfessional = async (req, res) => {
       });
     }
 
-    // Check for duplicate email if email is being changed
-    if (email && email !== professional.email) {
-      const existingProfessional = await Professional.findOne({ email });
-      if (existingProfessional) {
-        return res.status(400).json({
-          success: false,
-          message: 'Professional with this email already exists'
-        });
-      }
-    }
-
-    // Update fields
     if (name) professional.name = name;
     if (email) professional.email = email;
-    if (phoneNumber) professional.phoneNumber = phoneNumber;
+    if (phone) professional.phone = phone;
     if (role) professional.role = role;
-    if (specialization) {
-      professional.specialization = Array.isArray(specialization) 
-        ? specialization 
-        : specialization.split(',').map(s => s.trim());
+    if (specializations) {
+      professional.specializations = Array.isArray(specializations)
+        ? specializations
+        : specializations.split(',').map(s => s.trim());
     }
-    if (services) {
-      professional.services = Array.isArray(services) 
-        ? services 
-        : JSON.parse(services);
-    }
-    if (experience !== undefined) professional.experience = parseInt(experience);
+    if (experience !== undefined) professional.experience = experience;
     if (bio !== undefined) professional.bio = bio;
-    if (isActive !== undefined) professional.isActive = isActive === 'true' || isActive === true;
-    if (isAvailable !== undefined) professional.isAvailable = isAvailable === 'true' || isAvailable === true;
-    if (availableSlots) professional.availableSlots = JSON.parse(availableSlots);
-    if (certifications) professional.certifications = JSON.parse(certifications);
-
-    professional.updatedBy = req.user._id;
-
-    // Handle image upload or URL
-    if (req.file) {
-      // Delete old image if it was stored in S3
-      if (professional.imageKey) {
-        try {
-          await deleteFromS3(professional.imageKey);
-        } catch (error) {
-          console.error('Error deleting old image:', error);
-        }
-      }
-      
-      professional.profileImage = req.file.location;
-      professional.imageKey = req.file.key;
-    } else if (profileImageUrl !== undefined) {
-      // Delete old image if it was stored in S3
-      if (professional.imageKey) {
-        try {
-          await deleteFromS3(professional.imageKey);
-        } catch (error) {
-          console.error('Error deleting old image:', error);
-        }
-      }
-      
-      professional.profileImage = profileImageUrl ? profileImageUrl.trim() : null;
-      professional.imageKey = null;
-    }
+    if (isActive !== undefined) professional.isActive = isActive;
 
     await professional.save();
-    await professional.populate('services', 'name category');
 
     res.json({
       success: true,
@@ -326,7 +182,7 @@ exports.updateProfessional = async (req, res) => {
     console.error('Update professional error:', error);
     res.status(500).json({
       success: false,
-      message: error.message || 'Failed to update professional'
+      message: 'Failed to update professional'
     });
   }
 };
@@ -336,24 +192,13 @@ exports.deleteProfessional = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const professional = await Professional.findById(id);
+    const professional = await Professional.findByIdAndDelete(id);
     if (!professional) {
       return res.status(404).json({
         success: false,
         message: 'Professional not found'
       });
     }
-
-    // Delete image from S3 if exists
-    if (professional.imageKey) {
-      try {
-        await deleteFromS3(professional.imageKey);
-      } catch (error) {
-        console.error('Error deleting image from S3:', error);
-      }
-    }
-
-    await Professional.findByIdAndDelete(id);
 
     res.json({
       success: true,
@@ -365,89 +210,6 @@ exports.deleteProfessional = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to delete professional'
-    });
-  }
-};
-
-// Toggle professional status (Admin only)
-exports.toggleProfessionalStatus = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const professional = await Professional.findById(id);
-    if (!professional) {
-      return res.status(404).json({
-        success: false,
-        message: 'Professional not found'
-      });
-    }
-
-    professional.isActive = !professional.isActive;
-    professional.updatedBy = req.user._id;
-    await professional.save();
-
-    res.json({
-      success: true,
-      message: `Professional ${professional.isActive ? 'activated' : 'deactivated'} successfully`,
-      data: professional
-    });
-
-  } catch (error) {
-    console.error('Toggle professional status error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to toggle professional status'
-    });
-  }
-};
-
-// Toggle professional availability (Admin only)
-exports.toggleProfessionalAvailability = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const professional = await Professional.findById(id);
-    if (!professional) {
-      return res.status(404).json({
-        success: false,
-        message: 'Professional not found'
-      });
-    }
-
-    professional.isAvailable = !professional.isAvailable;
-    professional.updatedBy = req.user._id;
-    await professional.save();
-
-    res.json({
-      success: true,
-      message: `Professional marked as ${professional.isAvailable ? 'available' : 'unavailable'}`,
-      data: professional
-    });
-
-  } catch (error) {
-    console.error('Toggle professional availability error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to toggle professional availability'
-    });
-  }
-};
-
-// Get specializations (Public)
-exports.getSpecializations = async (req, res) => {
-  try {
-    const specializations = await Professional.distinct('specialization', { isActive: true });
-    
-    res.json({
-      success: true,
-      data: specializations.filter(s => s) // Remove null/empty values
-    });
-
-  } catch (error) {
-    console.error('Get specializations error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch specializations'
     });
   }
 };

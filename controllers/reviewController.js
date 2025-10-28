@@ -3,12 +3,13 @@ const Review = require('../models/Review');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Service = require('../models/Service');
+const Professional = require('../models/Professional');
 const { uploadToS3, deleteMultipleFromS3 } = require('../config/s3');
 
-// Create a review for a product or service
+// Create a review for a product, service, or professional
 exports.createReview = async (req, res) => {
   try {
-    const { orderId, itemId, type, rating, comment } = req.body;
+    const { orderId, itemId, type, rating, comment, professionalId } = req.body;
     const userId = req.user._id;
 
     // Validate required fields
@@ -62,18 +63,50 @@ exports.createReview = async (req, res) => {
       });
     }
 
-    // Check if user already reviewed this item
-    const existingReview = await Review.findOne({
-      user: userId,
-      order: orderId,
-      [type === 'product' ? 'productId' : 'serviceId']: itemId
-    });
+    // For professional reviews, verify the professional exists and was assigned
+    if (type === 'professional') {
+      if (!professionalId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Professional ID is required for professional reviews'
+        });
+      }
 
-    if (existingReview) {
-      return res.status(400).json({
-        success: false,
-        message: 'You have already reviewed this item'
+      const professional = await Professional.findById(professionalId);
+      if (!professional) {
+        return res.status(404).json({
+          success: false,
+          message: 'Professional not found'
+        });
+      }
+
+      // Check if user already reviewed this professional for this order
+      const existingReview = await Review.findOne({
+        user: userId,
+        order: orderId,
+        professionalId: professionalId
       });
+
+      if (existingReview) {
+        return res.status(400).json({
+          success: false,
+          message: 'You have already reviewed this professional for this order'
+        });
+      }
+    } else {
+      // Check if user already reviewed this item
+      const existingReview = await Review.findOne({
+        user: userId,
+        order: orderId,
+        [type === 'product' ? 'productId' : 'serviceId']: itemId
+      });
+
+      if (existingReview) {
+        return res.status(400).json({
+          success: false,
+          message: 'You have already reviewed this item'
+        });
+      }
     }
 
     // Handle media uploads
@@ -111,8 +144,11 @@ exports.createReview = async (req, res) => {
 
     if (type === 'product') {
       reviewData.productId = itemId;
-    } else {
+    } else if (type === 'service') {
       reviewData.serviceId = itemId;
+    } else if (type === 'professional') {
+      reviewData.professionalId = professionalId;
+      reviewData.serviceId = itemId; // Keep serviceId for reference
     }
 
     const review = await Review.create(reviewData);
@@ -120,7 +156,8 @@ exports.createReview = async (req, res) => {
     await review.populate([
       { path: 'user', select: 'name profilePicture' },
       { path: 'productId', select: 'name primaryImage' },
-      { path: 'serviceId', select: 'name image_url' }
+      { path: 'serviceId', select: 'name image_url' },
+      { path: 'professionalId', select: 'name profilePicture' }
     ]);
 
     res.status(201).json({
@@ -165,7 +202,6 @@ exports.getProductReviews = async (req, res) => {
       status: 'approved'
     });
 
-    // Get summary with breakdown and average rating
     const summary = await Review.getProductSummary(productId);
 
     res.json({
@@ -216,7 +252,6 @@ exports.getServiceReviews = async (req, res) => {
       status: 'approved'
     });
 
-    // Get summary with breakdown and average rating
     const summary = await Review.getServiceSummary(serviceId);
 
     res.json({
@@ -241,6 +276,57 @@ exports.getServiceReviews = async (req, res) => {
   }
 };
 
+// Get reviews for a specific professional
+exports.getProfessionalReviews = async (req, res) => {
+  try {
+    const { professionalId } = req.params;
+    const { page = 1, limit = 10, sort = 'recent' } = req.query;
+    const skip = (page - 1) * limit;
+
+    let sortOption = { createdAt: -1 };
+    if (sort === 'helpful') sortOption = { helpful: -1, createdAt: -1 };
+    else if (sort === 'rating_high') sortOption = { rating: -1, createdAt: -1 };
+    else if (sort === 'rating_low') sortOption = { rating: 1, createdAt: -1 };
+
+    const reviews = await Review.find({
+      professionalId,
+      status: 'approved'
+    })
+      .populate('user', 'name profilePicture')
+      .populate('serviceId', 'name image_url')
+      .sort(sortOption)
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Review.countDocuments({
+      professionalId,
+      status: 'approved'
+    });
+
+    const summary = await Review.getProfessionalSummary(professionalId);
+
+    res.json({
+      success: true,
+      data: {
+        reviews,
+        summary,
+        pagination: {
+          current: parseInt(page),
+          pages: Math.ceil(total / limit),
+          total
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Get professional reviews error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch reviews'
+    });
+  }
+};
+
 // Get user's reviews
 exports.getUserReviews = async (req, res) => {
   try {
@@ -249,7 +335,7 @@ exports.getUserReviews = async (req, res) => {
     const skip = (page - 1) * limit;
 
     const filter = { user: userId };
-    if (type && ['product', 'service'].includes(type)) {
+    if (type && ['product', 'service', 'professional'].includes(type)) {
       filter.type = type;
     }
 
@@ -257,6 +343,7 @@ exports.getUserReviews = async (req, res) => {
       .populate([
         { path: 'productId', select: 'name primaryImage' },
         { path: 'serviceId', select: 'name image_url' },
+        { path: 'professionalId', select: 'name profilePicture' },
         { path: 'order', select: 'orderNumber' }
       ])
       .sort({ createdAt: -1 })
@@ -286,7 +373,7 @@ exports.getUserReviews = async (req, res) => {
   }
 };
 
-// Get reviewable items from an order
+// Get reviewable items from an order (including professionals)
 exports.getReviewableItems = async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -294,7 +381,8 @@ exports.getReviewableItems = async (req, res) => {
 
     const order = await Order.findOne({ _id: orderId, user: userId })
       .populate('productItems.productId', 'name primaryImage')
-      .populate('serviceItems.serviceId', 'name image_url');
+      .populate('serviceItems.serviceId', 'name image_url')
+      .populate('serviceItems.professionalId', 'name profilePicture');
 
     if (!order) {
       return res.status(404).json({
@@ -324,15 +412,23 @@ exports.getReviewableItems = async (req, res) => {
 
     const reviewedServiceIds = new Set(
       existingReviews
-        .filter(r => r.serviceId)
+        .filter(r => r.serviceId && !r.professionalId)
         .map(r => r.serviceId.toString())
+    );
+
+    const reviewedProfessionalIds = new Set(
+      existingReviews
+        .filter(r => r.professionalId)
+        .map(r => r.professionalId.toString())
     );
 
     // Build reviewable items list
     const reviewableItems = [];
 
+    // Add products
     order.productItems.forEach(item => {
-      if (item.productId && !reviewedProductIds.has(item.productId._id.toString())) {
+      if (item.productId) {
+        const reviewed = reviewedProductIds.has(item.productId._id.toString());
         reviewableItems.push({
           itemId: item.productId._id,
           type: 'product',
@@ -340,23 +436,15 @@ exports.getReviewableItems = async (req, res) => {
           image: item.productId.primaryImage,
           price: item.price,
           quantity: item.quantity,
-          reviewed: false
-        });
-      } else if (item.productId) {
-        reviewableItems.push({
-          itemId: item.productId._id,
-          type: 'product',
-          name: item.productId.name,
-          image: item.productId.primaryImage,
-          price: item.price,
-          quantity: item.quantity,
-          reviewed: true
+          reviewed
         });
       }
     });
 
+    // Add services and professionals
     order.serviceItems.forEach(item => {
-      if (item.serviceId && !reviewedServiceIds.has(item.serviceId._id.toString())) {
+      if (item.serviceId) {
+        const reviewed = reviewedServiceIds.has(item.serviceId._id.toString());
         reviewableItems.push({
           itemId: item.serviceId._id,
           type: 'service',
@@ -364,18 +452,24 @@ exports.getReviewableItems = async (req, res) => {
           image: item.serviceId.image_url,
           price: item.price,
           quantity: item.quantity,
-          reviewed: false
+          reviewed
         });
-      } else if (item.serviceId) {
-        reviewableItems.push({
-          itemId: item.serviceId._id,
-          type: 'service',
-          name: item.serviceId.name,
-          image: item.serviceId.image_url,
-          price: item.price,
-          quantity: item.quantity,
-          reviewed: true
-        });
+
+        // Add professional review option if professional is assigned
+        if (item.professionalId) {
+          const professionalReviewed = reviewedProfessionalIds.has(item.professionalId._id.toString());
+          reviewableItems.push({
+            itemId: item.serviceId._id, // Keep service ID for order verification
+            professionalId: item.professionalId._id,
+            type: 'professional',
+            name: item.professionalId.name,
+            serviceName: item.serviceId.name,
+            image: item.professionalId.profilePicture,
+            price: item.price,
+            quantity: item.quantity,
+            reviewed: professionalReviewed
+          });
+        }
       }
     });
 
@@ -432,7 +526,8 @@ exports.updateReview = async (req, res) => {
     await review.populate([
       { path: 'user', select: 'name profilePicture' },
       { path: 'productId', select: 'name primaryImage' },
-      { path: 'serviceId', select: 'name image_url' }
+      { path: 'serviceId', select: 'name image_url' },
+      { path: 'professionalId', select: 'name profilePicture' }
     ]);
 
     res.json({
@@ -491,7 +586,7 @@ exports.deleteReview = async (req, res) => {
 exports.voteReview = async (req, res) => {
   try {
     const { reviewId } = req.params;
-    const { vote } = req.body; // 'up' or 'down'
+    const { vote } = req.body;
     const userId = req.user._id;
 
     if (!['up', 'down'].includes(vote)) {
@@ -510,7 +605,6 @@ exports.voteReview = async (req, res) => {
       });
     }
 
-    // Check if user already voted
     const existingVoteIndex = review.helpfulVotes.findIndex(
       v => v.user.toString() === userId.toString()
     );
@@ -519,16 +613,13 @@ exports.voteReview = async (req, res) => {
       const existingVote = review.helpfulVotes[existingVoteIndex];
       
       if (existingVote.vote === vote) {
-        // Remove vote if clicking same button
         review.helpfulVotes.splice(existingVoteIndex, 1);
         review.helpful = vote === 'up' ? review.helpful - 1 : review.helpful + 1;
       } else {
-        // Change vote
         existingVote.vote = vote;
         review.helpful = vote === 'up' ? review.helpful + 2 : review.helpful - 2;
       }
     } else {
-      // Add new vote
       review.helpfulVotes.push({ user: userId, vote });
       review.helpful = vote === 'up' ? review.helpful + 1 : review.helpful - 1;
     }

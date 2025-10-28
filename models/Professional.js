@@ -4,42 +4,42 @@ const mongoose = require('mongoose');
 const professionalSchema = new mongoose.Schema({
   name: {
     type: String,
-    required: [true, 'Professional name is required'],
-    trim: true,
-    maxlength: [100, 'Name cannot exceed 100 characters']
+    required: true,
+    trim: true
   },
   email: {
     type: String,
-    required: [true, 'Email is required'],
+    required: true,
     unique: true,
-    trim: true,
     lowercase: true,
-    match: [/^\S+@\S+\.\S+$/, 'Please provide a valid email']
-  },
-  phoneNumber: {
-    type: String,
-    required: [true, 'Phone number is required'],
-    trim: true,
-    match: [/^[0-9]{10}$/, 'Please provide a valid 10-digit phone number']
-  },
-  role: {
-    type: String,
-    default: 'Professional',
     trim: true
   },
-  specialization: [{
+  phone: {
     type: String,
-    trim: true
-  }],
+    required: true
+  },
+  profilePicture: {
+    type: String,
+    default: null
+  },
+  // Services this professional provides
   services: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Service'
   }],
-  experience: {
-    type: Number,
-    min: [0, 'Experience cannot be negative'],
-    default: 0
+  specialization: {
+    type: String,
+    trim: true
   },
+  experience: {
+    type: Number, // in years
+    min: 0
+  },
+  bio: {
+    type: String,
+    maxlength: 500
+  },
+  // Ratings
   rating: {
     type: Number,
     default: 0,
@@ -48,69 +48,43 @@ const professionalSchema = new mongoose.Schema({
   },
   reviewCount: {
     type: Number,
-    default: 0,
-    min: 0
+    default: 0
   },
-  totalBookings: {
-    type: Number,
-    default: 0,
-    min: 0
-  },
-  profileImage: {
-    type: String,
-    default: null
-  },
-  imageKey: {
-    type: String,
-    default: null
-  },
-  bio: {
-    type: String,
-    trim: true,
-    maxlength: [500, 'Bio cannot exceed 500 characters']
-  },
-  isActive: {
-    type: Boolean,
-    default: true
-  },
+  // Availability
   isAvailable: {
     type: Boolean,
     default: true
   },
-  availableSlots: [{
-    day: {
-      type: String,
-      enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
-    },
-    startTime: String,
-    endTime: String
-  }],
-  certifications: [{
-    name: String,
-    issuedBy: String,
-    issuedDate: Date
-  }],
-  createdBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+  workingHours: {
+    start: String, // e.g., "09:00"
+    end: String    // e.g., "18:00"
   },
-  updatedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    default: null
+  // Statistics
+  totalOrders: {
+    type: Number,
+    default: 0
+  },
+  completedOrders: {
+    type: Number,
+    default: 0
+  },
+  // Status
+  status: {
+    type: String,
+    enum: ['active', 'inactive', 'suspended'],
+    default: 'active'
   }
 }, {
   timestamps: true
 });
 
-// Index for better search performance
-professionalSchema.index({ name: 'text', specialization: 1 });
-professionalSchema.index({ isActive: 1, isAvailable: 1 });
+// Indexes
+professionalSchema.index({ name: 1 });
+professionalSchema.index({ email: 1 });
 professionalSchema.index({ services: 1 });
+professionalSchema.index({ rating: -1 });
+professionalSchema.index({ status: 1 });
 
-// Ensure virtuals are included in JSON output
-professionalSchema.set('toJSON', { virtuals: true });
-professionalSchema.set('toObject', { virtuals: true });
+const Professional = mongoose.model('Professional', professionalSchema);
 
-module.exports = mongoose.model('Professional', professionalSchema);
+module.exports = Professional;

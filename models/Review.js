@@ -12,7 +12,6 @@ const reviewSchema = new mongoose.Schema({
     ref: 'Order',
     required: true
   },
-  // Either productId or serviceId will be set, not both
   productId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product',
@@ -23,9 +22,14 @@ const reviewSchema = new mongoose.Schema({
     ref: 'Service',
     default: null
   },
+  professionalId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Professional',
+    default: null
+  },
   type: {
     type: String,
-    enum: ['product', 'service'],
+    enum: ['product', 'service', 'professional'],
     required: true
   },
   rating: {
@@ -97,40 +101,51 @@ const reviewSchema = new mongoose.Schema({
 // Indexes for better performance
 reviewSchema.index({ productId: 1, createdAt: -1 });
 reviewSchema.index({ serviceId: 1, createdAt: -1 });
+reviewSchema.index({ professionalId: 1, createdAt: -1 });
 reviewSchema.index({ user: 1 });
 reviewSchema.index({ order: 1 });
 reviewSchema.index({ status: 1 });
 reviewSchema.index({ rating: 1 });
 
-// Validation: Must have either productId or serviceId, not both
+// Validation: Must have either productId, serviceId, or professionalId, not multiple
 reviewSchema.pre('validate', function(next) {
-  if ((this.productId && this.serviceId) || (!this.productId && !this.serviceId)) {
-    next(new Error('Review must have either productId or serviceId, not both'));
+  const hasProduct = !!this.productId;
+  const hasService = !!this.serviceId;
+  const hasProfessional = !!this.professionalId;
+  
+  const count = [hasProduct, hasService, hasProfessional].filter(Boolean).length;
+  
+  if (count !== 1) {
+    next(new Error('Review must have exactly one of: productId, serviceId, or professionalId'));
   } else {
     next();
   }
 });
 
-// Update product/service average rating after save
+// Update product/service/professional average rating after save
 reviewSchema.post('save', async function() {
   try {
     if (this.type === 'product' && this.productId) {
       await updateProductRating(this.productId);
     } else if (this.type === 'service' && this.serviceId) {
       await updateServiceRating(this.serviceId);
+    } else if (this.type === 'professional' && this.professionalId) {
+      await updateProfessionalRating(this.professionalId);
     }
   } catch (error) {
     console.error('Error updating rating:', error);
   }
 });
 
-// Update product/service average rating after remove
+// Update product/service/professional average rating after remove
 reviewSchema.post('remove', async function() {
   try {
     if (this.type === 'product' && this.productId) {
       await updateProductRating(this.productId);
     } else if (this.type === 'service' && this.serviceId) {
       await updateServiceRating(this.serviceId);
+    } else if (this.type === 'professional' && this.professionalId) {
+      await updateProfessionalRating(this.professionalId);
     }
   } catch (error) {
     console.error('Error updating rating:', error);
@@ -195,6 +210,35 @@ async function updateServiceRating(serviceId) {
   }
 }
 
+// Helper function to update professional rating
+async function updateProfessionalRating(professionalId) {
+  const Professional = mongoose.model('Professional');
+  const Review = mongoose.model('Review');
+  
+  const stats = await Review.aggregate([
+    { $match: { professionalId: professionalId, status: 'approved' } },
+    {
+      $group: {
+        _id: null,
+        averageRating: { $avg: '$rating' },
+        totalReviews: { $sum: 1 }
+      }
+    }
+  ]);
+
+  if (stats.length > 0) {
+    await Professional.findByIdAndUpdate(professionalId, {
+      rating: Math.round(stats[0].averageRating * 10) / 10,
+      reviewCount: stats[0].totalReviews
+    });
+  } else {
+    await Professional.findByIdAndUpdate(professionalId, {
+      rating: 0,
+      reviewCount: 0
+    });
+  }
+}
+
 // Static method to get review summary for product
 reviewSchema.statics.getProductSummary = async function(productId) {
   const summary = await this.aggregate([
@@ -212,16 +256,15 @@ reviewSchema.statics.getProductSummary = async function(productId) {
     status: 'approved' 
   });
 
-  // Calculate average rating
   let averageRating = 0;
   if (total > 0) {
     const totalStars = summary.reduce((acc, item) => acc + (item._id * item.count), 0);
-    averageRating = Math.round((totalStars / total) * 10) / 10; // Round to 1 decimal
+    averageRating = Math.round((totalStars / total) * 10) / 10;
   }
 
   const result = {
     total,
-    averageRating, // ⭐ Added average rating
+    averageRating,
     breakdown: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
   };
 
@@ -249,16 +292,51 @@ reviewSchema.statics.getServiceSummary = async function(serviceId) {
     status: 'approved' 
   });
 
-  // Calculate average rating
   let averageRating = 0;
   if (total > 0) {
     const totalStars = summary.reduce((acc, item) => acc + (item._id * item.count), 0);
-    averageRating = Math.round((totalStars / total) * 10) / 10; // Round to 1 decimal
+    averageRating = Math.round((totalStars / total) * 10) / 10;
   }
 
   const result = {
     total,
-    averageRating, // ⭐ Added average rating
+    averageRating,
+    breakdown: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
+  };
+
+  summary.forEach(item => {
+    result.breakdown[item._id] = item.count;
+  });
+
+  return result;
+};
+
+// Static method to get review summary for professional
+reviewSchema.statics.getProfessionalSummary = async function(professionalId) {
+  const summary = await this.aggregate([
+    { $match: { professionalId: new mongoose.Types.ObjectId(professionalId), status: 'approved' } },
+    {
+      $group: {
+        _id: '$rating',
+        count: { $sum: 1 }
+      }
+    }
+  ]);
+
+  const total = await this.countDocuments({ 
+    professionalId: professionalId, 
+    status: 'approved' 
+  });
+
+  let averageRating = 0;
+  if (total > 0) {
+    const totalStars = summary.reduce((acc, item) => acc + (item._id * item.count), 0);
+    averageRating = Math.round((totalStars / total) * 10) / 10;
+  }
+
+  const result = {
+    total,
+    averageRating,
     breakdown: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
   };
 

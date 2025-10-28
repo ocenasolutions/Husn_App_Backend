@@ -10,10 +10,9 @@ const storage = multer.memoryStorage();
 const upload = multer({
   storage,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit per file
+    fileSize: 10 * 1024 * 1024, 
   },
   fileFilter: (req, file, cb) => {
-    // Accept images and videos
     if (file.mimetype.startsWith('image/') || file.mimetype.startsWith('video/')) {
       cb(null, true);
     } else {
@@ -22,11 +21,16 @@ const upload = multer({
   }
 });
 
+// Get reviews for a product
 router.get('/product/:productId', reviewController.getProductReviews);
 
 // Get reviews for a service
 router.get('/service/:serviceId', reviewController.getServiceReviews);
 
+// Get reviews for a professional
+router.get('/professional/:professionalId', reviewController.getProfessionalReviews);
+
+// Create a review
 router.post('/', authMiddleware, upload.array('media', 5), reviewController.createReview);
 
 // Get user's own reviews
