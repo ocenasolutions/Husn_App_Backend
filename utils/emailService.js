@@ -1,6 +1,5 @@
 const axios = require('axios');
 
-// Brevo (formerly Sendinblue) configuration
 const BREVO_API_KEY = process.env.BREVO_API_KEY;
 const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'contact.husn@gmail.com';
 const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'Husn Salon';
@@ -8,11 +7,11 @@ const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
 
 /**
  * Send email via Brevo API
- * @param {string} to - Recipient email
- * @param {string} toName - Recipient name
- * @param {string} subject - Email subject
- * @param {string} htmlContent - HTML content
- * @returns {Promise<object>} Brevo response
+ * @param {string} to 
+ * @param {string} toName 
+ * @param {string} subject 
+ * @param {string} htmlContent 
+ * @returns {Promise<object>} 
  */
 const sendEmail = async (to, toName, subject, htmlContent) => {
   if (!BREVO_API_KEY) {
@@ -20,7 +19,6 @@ const sendEmail = async (to, toName, subject, htmlContent) => {
     throw new Error('Brevo API key is not configured. Please set BREVO_API_KEY in your .env file');
   }
 
-  // Log API key format for debugging (hide most characters)
   const keyPreview = BREVO_API_KEY ? 
     `${BREVO_API_KEY.substring(0, 10)}...${BREVO_API_KEY.substring(BREVO_API_KEY.length - 4)}` : 
     'undefined';
@@ -60,7 +58,7 @@ const sendEmail = async (to, toName, subject, htmlContent) => {
 
 /**
  * Generate a 6-digit OTP
- * @returns {string} OTP code
+ * @returns {string} 
  */
 const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -68,10 +66,10 @@ const generateOTP = () => {
 
 /**
  * Send OTP verification email
- * @param {string} email - Recipient email
- * @param {string} name - Recipient name
- * @param {string} otp - OTP code
- * @returns {Promise<object>} Email send result
+ * @param {string} email 
+ * @param {string} name 
+ * @param {string} otp 
+ * @returns {Promise<object>} 
  */
 const sendOTPEmail = async (email, name, otp) => {
   console.log(`Attempting to send OTP ${otp} to ${email}`);
@@ -174,9 +172,9 @@ const sendOTPEmail = async (email, name, otp) => {
 
 /**
  * Send welcome email - DISABLED (stub function for compatibility)
- * @param {string} email - Recipient email
- * @param {string} name - Recipient name
- * @returns {Promise<object>} Mock success response
+ * @param {string} email 
+ * @param {string} name 
+ * @returns {Promise<object>} 
  */
 const sendWelcomeEmail = async (email, name) => {
   console.log(`Welcome email disabled - skipping for ${email}`);
@@ -185,7 +183,7 @@ const sendWelcomeEmail = async (email, name) => {
 
 /**
  * Test Brevo connection
- * @returns {Promise<boolean>} Connection status
+ * @returns {Promise<boolean>} 
  */
 const testEmailConnection = async () => {
   try {
@@ -213,8 +211,8 @@ const testEmailConnection = async () => {
 
 module.exports = {
   sendOTPEmail,
-  sendWelcomeEmail, // Stub function - does nothing
+  sendWelcomeEmail,
   testEmailConnection,
   generateOTP,
-  sendEmail // Export for custom emails if needed
+  sendEmail 
 };
