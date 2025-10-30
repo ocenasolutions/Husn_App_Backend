@@ -7,6 +7,8 @@ const multer = require('multer');
 const path = require('path');
 require('dotenv').config();
 
+const { initializeSocket } = require('./config/socketConfig');
+
 const authRoutes = require('./routes/authRoutes');
 const orderRoutes = require('./routes/orderRoutes'); 
 const serviceRoutes = require('./routes/serviceRoutes');
@@ -24,9 +26,13 @@ const helpRoutes = require('./routes/helpRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const professionalRoutes = require('./routes/professionalRoutes'); 
-// const professionalLocationRoutes = require('./routes/professionalLocationRoutes');
+// const trackingRoutes  = require('./routes/trackingRoutes');
 
 const app = express();
+
+// Initialize Socket.IO
+// const io = initializeSocket(server);
+// console.log('✅ Socket.IO initialized');
 
 app.use(cors());
 app.use(express.json());
@@ -74,7 +80,7 @@ app.use('/api/help', helpRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/chats', chatRoutes);
 app.use('/api/professionals', professionalRoutes);
-// app.use('/api/location', professionalLocationRoutes);
+// app.use('/api/tracking', trackingRoutes); 
 
 app.get('/', (req, res) => {
   res.json({ message: 'Booking System API Server is running!' });

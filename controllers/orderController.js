@@ -3,6 +3,7 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Service = require('../models/Service');
 const Notification = require('../models/Notification');
+// const { emitToOrder } = require('../config/socketConfig');
 
 // Create a new order
 exports.createOrder = async (req, res) => {
@@ -720,3 +721,9 @@ exports.verifyCustomerOtp = async (req, res) => {
     });
   }
 };
+
+// emitToOrder(orderId, 'professional:assigned', {
+//   professionalId,
+//   professionalName,
+//   assignedAt: new Date()
+// });
