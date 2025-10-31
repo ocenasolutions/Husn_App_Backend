@@ -16,11 +16,16 @@ exports.getAllProducts = async (req, res) => {
       search,
       sortBy = 'createdAt',
       sortOrder = 'desc',
-      status = 'published', // Changed default from 'published' 
-      stockStatus
+      status = 'published',
+      stockStatus,
+      includeInactive = 'false'
     } = req.query;
 
-    const query = { isActive: true };
+    const query = {};
+    
+    if (includeInactive !== 'true') {
+      query.isActive = true;
+    }
     
     // Handle status filter
     if (status && status !== 'all') {
@@ -970,3 +975,4 @@ exports.getAllProductsForOffers = async (req, res) => {
     });
   }
 };
+

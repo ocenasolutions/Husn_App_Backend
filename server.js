@@ -7,8 +7,6 @@ const multer = require('multer');
 const path = require('path');
 require('dotenv').config();
 
-const { initializeSocket } = require('./config/socketConfig');
-
 const authRoutes = require('./routes/authRoutes');
 const orderRoutes = require('./routes/orderRoutes'); 
 const serviceRoutes = require('./routes/serviceRoutes');
@@ -26,13 +24,9 @@ const helpRoutes = require('./routes/helpRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const professionalRoutes = require('./routes/professionalRoutes'); 
-// const trackingRoutes  = require('./routes/trackingRoutes');
+// const professionalLocationRoutes = require('./routes/professionalLocationRoutes');
 
 const app = express();
-
-// Initialize Socket.IO
-// const io = initializeSocket(server);
-// console.log('✅ Socket.IO initialized');
 
 app.use(cors());
 app.use(express.json());
@@ -47,16 +41,16 @@ mongoose.connect(process.env.MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 })
-.then(() => console.log('✅ MongoDB Connected'))
-.catch(err => console.error('❌ MongoDB Connection Error:', err));
+.then(() => console.log('âœ… MongoDB Connected'))
+.catch(err => console.error('âŒ MongoDB Connection Error:', err));
 
 
 const redisClient = redis.createClient({
   url: process.env.REDIS_URL 
 });
 
-redisClient.on('connect', () => console.log('✅ Redis Connected'));
-redisClient.on('error', (err) => console.error('❌ Redis Error:', err));
+redisClient.on('connect', () => console.log('âœ… Redis Connected'));
+redisClient.on('error', (err) => console.error('âŒ Redis Error:', err));
 
 redisClient.connect().catch(console.error);
 
@@ -80,7 +74,7 @@ app.use('/api/help', helpRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/chats', chatRoutes);
 app.use('/api/professionals', professionalRoutes);
-// app.use('/api/tracking', trackingRoutes); 
+// app.use('/api/location', professionalLocationRoutes);
 
 app.get('/', (req, res) => {
   res.json({ message: 'Booking System API Server is running!' });
@@ -97,5 +91,5 @@ app.use((req, res) => {
 
 const PORT = process.env.PORT || 9000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`ðŸš€ Server running on port ${PORT}`);
 });

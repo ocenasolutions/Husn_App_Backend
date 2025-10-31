@@ -1,4 +1,4 @@
-0// server/models/Order.js - Fixed OTP generation timing
+// server/models/Order.js - Fixed OTP generation timing
 const mongoose = require('mongoose');
 
 const orderSchema = new mongoose.Schema({
@@ -207,7 +207,7 @@ orderSchema.pre('save', function(next) {
     const hasServices = this.serviceItems && this.serviceItems.length > 0;
     if (hasServices && !this.serviceOtp) {
       this.serviceOtp = this.constructor.generateServiceOtp();
-      console.log('✅ Generated service OTP for new order:', this.serviceOtp);
+      console.log('âœ… Generated service OTP for new order:', this.serviceOtp);
     }
   }
   next();

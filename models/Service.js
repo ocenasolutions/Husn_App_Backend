@@ -172,7 +172,6 @@ serviceSchema.index({ name: 'text', description: 'text', category: 1 });
 serviceSchema.index({ isActive: 1, featured: -1, createdAt: -1 });
 serviceSchema.index({ offerActive: 1, offerEndDate: 1 }); 
 
-// Pre-save middleware to calculate discounted price
 serviceSchema.pre('save', function(next) {
   if (this.discount > 0 && this.originalPrice) {
     this.price = Math.round(this.originalPrice * (1 - this.discount / 100));

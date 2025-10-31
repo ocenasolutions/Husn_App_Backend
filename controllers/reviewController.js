@@ -642,3 +642,53 @@ exports.voteReview = async (req, res) => {
     });
   }
 };
+
+// Get all approved reviews (for public / user-facing screen)
+exports.getAllPublicReviews = async (req, res) => {
+  try {
+    const { page = 1, limit = 10, type, rating, sort = 'recent' } = req.query;
+    const skip = (page - 1) * limit;
+
+    const filter = { status: 'approved' };
+    if (type && ['product', 'service', 'professional'].includes(type)) {
+      filter.type = type;
+    }
+    if (rating && rating !== 'all') {
+      filter.rating = parseInt(rating);
+    }
+
+    let sortOption = { createdAt: -1 };
+    if (sort === 'helpful') sortOption = { helpful: -1, createdAt: -1 };
+    else if (sort === 'rating_high') sortOption = { rating: -1, createdAt: -1 };
+    else if (sort === 'rating_low') sortOption = { rating: 1, createdAt: -1 };
+
+    const reviews = await Review.find(filter)
+      .populate('user', 'name profilePicture')
+      .populate('productId', 'name primaryImage')
+      .populate('serviceId', 'name image_url')
+      .populate('professionalId', 'name profilePicture')
+      .sort(sortOption)
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Review.countDocuments(filter);
+
+    res.json({
+      success: true,
+      data: {
+        reviews,
+        pagination: {
+          current: parseInt(page),
+          pages: Math.ceil(total / limit),
+          total
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get all public reviews error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch public reviews'
+    });
+  }
+};

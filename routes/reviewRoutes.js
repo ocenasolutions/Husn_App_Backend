@@ -48,4 +48,8 @@ router.delete('/:reviewId', authMiddleware, reviewController.deleteReview);
 // Vote on review (helpful/not helpful)
 router.post('/:reviewId/vote', authMiddleware, reviewController.voteReview);
 
+// Public route - get all approved reviews
+router.get('/all', reviewController.getAllPublicReviews);
+
+
 module.exports = router;

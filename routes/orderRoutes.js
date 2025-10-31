@@ -1,4 +1,4 @@
-// server/routes/orderRoutes.js - Added customer OTP verification
+// server/routes/orderRoutes.js - Added professional assignment route
 const express = require('express');
 const router = express.Router();
 const orderController = require('../controllers/orderController');
@@ -22,12 +22,15 @@ router.put('/admin/:id/delivery-date', adminMiddleware, orderController.setDeliv
 router.put('/admin/:id/service-time', adminMiddleware, orderController.setServiceTime);
 router.post('/admin/:id/start-service', adminMiddleware, orderController.startService);
 
+// NEW: Assign professional to service item
+router.put('/admin/:id/assign-professional', adminMiddleware, orderController.assignProfessionalToService);
+
 // User routes
 router.post('/', orderController.createOrder);
 router.get('/my-orders', orderController.getUserOrders);
 router.put('/:id/cancel', orderController.cancelOrder);
 
-// Customer OTP verification - NEW
+// Customer OTP verification
 router.post('/:id/verify-otp', orderController.verifyCustomerOtp);
 
 // This MUST be last

@@ -1,9 +1,8 @@
-// server/controllers/orderController.js - Enhanced with OTP verification for services
+//server/controllers/orderController.js
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Service = require('../models/Service');
 const Notification = require('../models/Notification');
-// const { emitToOrder } = require('../config/socketConfig');
 
 // Create a new order
 exports.createOrder = async (req, res) => {
@@ -72,13 +71,13 @@ exports.createOrder = async (req, res) => {
         try {
           await Notification.createOutOfStockNotification(product);
         } catch (notifError) {
-          console.error('⚠️ Failed to create out of stock notification:', notifError);
+          console.error('âš ï¸ Failed to create out of stock notification:', notifError);
         }
       } else if (newStock <= 5 && product.stock > 5) {
         try {
           await Notification.createLowStockNotification(product);
         } catch (notifError) {
-          console.error('⚠️ Failed to create low stock notification:', notifError);
+          console.error('âš ï¸ Failed to create low stock notification:', notifError);
         }
       }
     }
@@ -143,9 +142,9 @@ exports.createOrder = async (req, res) => {
 
     try {
       await Notification.createOrderNotification(order);
-      console.log('✅ Order notification created for admin');
+      console.log('âœ… Order notification created for admin');
     } catch (notifError) {
-      console.error('⚠️ Failed to create order notification:', notifError);
+      console.error('âš ï¸ Failed to create order notification:', notifError);
     }
 
     res.status(201).json({
@@ -647,6 +646,83 @@ exports.submitReview = async (req, res) => {
   }
 };
 
+
+// Assign professional to a service item (Admin only)
+exports.assignProfessionalToService = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { serviceItemId, professionalId, professionalName } = req.body;
+
+    console.log('Assign professional request:', {
+      orderId: id,
+      serviceItemId,
+      professionalId,
+      professionalName
+    });
+
+    if (!serviceItemId || !professionalId || !professionalName) {
+      return res.status(400).json({
+        success: false,
+        message: 'Service item ID, professional ID, and professional name are required'
+      });
+    }
+
+    const order = await Order.findById(id);
+    if (!order) {
+      console.log('Order not found:', id);
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    console.log('Order found, service items count:', order.serviceItems.length);
+
+    // Find the specific service item
+    const serviceItem = order.serviceItems.find(
+      item => item._id.toString() === serviceItemId
+    );
+
+    if (!serviceItem) {
+      console.log('Service item not found:', serviceItemId);
+      console.log('Available service items:', order.serviceItems.map(s => s._id.toString()));
+      return res.status(404).json({
+        success: false,
+        message: 'Service item not found in this order'
+      });
+    }
+
+    console.log('Service item found, assigning professional...');
+
+    // Assign the professional
+    serviceItem.professionalId = professionalId;
+    serviceItem.professionalName = professionalName;
+
+    await order.save();
+
+    console.log('Professional assigned successfully');
+
+    // Populate for response
+    await order.populate([
+      { path: 'productItems.productId', model: 'Product' },
+      { path: 'serviceItems.serviceId', model: 'Service' },
+      { path: 'user', select: 'name email phone' }
+    ]);
+
+    res.json({
+      success: true,
+      message: `Professional ${professionalName} assigned successfully`,
+      data: order
+    });
+
+  } catch (error) {
+    console.error('Assign professional to service error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to assign professional: ' + error.message
+    });
+  }
+};
 exports.verifyCustomerOtp = async (req, res) => {
   try {
     const { id } = req.params;
@@ -721,9 +797,3 @@ exports.verifyCustomerOtp = async (req, res) => {
     });
   }
 };
-
-// emitToOrder(orderId, 'professional:assigned', {
-//   professionalId,
-//   professionalName,
-//   assignedAt: new Date()
-// });

@@ -540,3 +540,68 @@ exports.toggleServiceStatus = async (req, res) => {
     });
   }
 };
+
+// Add this NEW endpoint in serviceController.js
+exports.getAllServicesForAdmin = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 1000,
+      category,
+      featured,
+      search,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
+
+    const query = {}; // NO isActive filter for admin
+
+    if (category) {
+      query.category = category;
+    }
+    
+    if (featured !== undefined) {
+      query.featured = featured === 'true';
+    }
+
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { tags: { $in: [new RegExp(search, 'i')] } }
+      ];
+    }
+
+    const sortOptions = {};
+    sortOptions[sortBy] = sortOrder === 'desc' ? -1 : 1;
+
+    const skip = (page - 1) * limit;
+
+    const services = await Service.find(query)
+      .populate('createdBy', 'name email')
+      .sort(sortOptions)
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Service.countDocuments(query);
+
+    res.json({
+      success: true,
+      data: services,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / limit),
+        totalServices: total,
+        hasNext: page * limit < total,
+        hasPrev: page > 1
+      }
+    });
+
+  } catch (error) {
+    console.error('Get admin services error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch services'
+    });
+  }
+};

@@ -21,6 +21,14 @@ router.get('/categories', serviceController.getCategories);
 router.get('/offers', serviceController.getOfferedServices);
 router.get('/:id', serviceController.getServiceById);
 
+// Add this to serviceRoutes.js (in admin routes section)
+router.get(
+  '/admin/all',
+  authMiddleware,
+  adminMiddleware,
+  serviceController.getAllServicesForAdmin
+);
+
 // Admin routes
 router.post(
   '/', 
