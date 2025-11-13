@@ -1,75 +1,108 @@
-// server/models/Order.js - Fixed OTP generation timing
+// server/models/Order.js - FIXED GEOJSON STRUCTURE
 const mongoose = require('mongoose');
 
 const orderSchema = new mongoose.Schema({
+  // User reference
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
   },
+
+  // Order identification
   orderNumber: {
     type: String,
-    unique: true,
-    required: true
+    required: true,
+    unique: true
   },
+
+  // Order type
   type: {
     type: String,
     enum: ['product', 'service', 'mixed'],
     required: true
   },
+
+  // Order status
   status: {
     type: String,
-    enum: ['placed', 'confirmed', 'shipped', 'out_for_delivery', 'delivered', 'cancelled'],
+    enum: [
+      'placed',
+      'confirmed',
+      'preparing',
+      'shipped',
+      'out_for_delivery',
+      'in_progress',
+      'delivered',
+      'completed',
+      'cancelled',
+      'rejected'
+    ],
     default: 'placed'
   },
-  // Service OTP - generated immediately for service orders
-  serviceOtp: {
-    type: String,
-    default: null
-  },
-  serviceStartedAt: {
-    type: Date,
-    default: null
-  },
-  serviceOtpVerified: {
-    type: Boolean,
-    default: false
-  },
-  // Service items
-  serviceItems: [{
-    serviceId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Service'
-    },
-    quantity: {
-      type: Number,
-      min: 1
-    },
-    price: {
-      type: Number,
-      min: 0
-    },
-    selectedDate: Date,
-    selectedTime: String,
-    professionalId: String,
-    professionalName: String
-  }],
+
   // Product items
   productItems: [{
     productId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Product'
+      ref: 'Product',
+      required: false
     },
     quantity: {
       type: Number,
+      required: true,
       min: 1
     },
     price: {
       type: Number,
+      required: true,
       min: 0
     }
   }],
-  // Address
+
+serviceItems: [{
+  serviceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Service',
+    required: false
+  },
+  quantity: {
+    type: Number,
+    required: true,
+    min: 1
+  },
+  price: {
+    type: Number,
+    required: true,
+    min: 0
+  },
+  selectedDate: {
+    type: Date,
+    required: false
+  },
+  selectedTime: {
+    type: String,
+    required: false
+  },
+  // ✅ CHANGED: Use email instead of ID
+  professionalEmail: {
+    type: String,
+    required: false,
+    lowercase: true,
+    trim: true
+  },
+  professionalName: {
+    type: String,
+    required: false
+  },
+  professionalPhone: {
+    type: String,
+    required: false
+  }
+}],
+
+
+  // Delivery/Service address with coordinates
   address: {
     type: {
       type: String,
@@ -90,168 +123,392 @@ const orderSchema = new mongoose.Schema({
     zipCode: {
       type: String,
       required: true
+    },
+    // Coordinates at root level for initial address
+    latitude: {
+      type: Number,
+      required: false
+    },
+    longitude: {
+      type: Number,
+      required: false
+    },
+    fullAddress: {
+      type: String,
+      required: false
     }
   },
-  // Payment
+
+  // ✅ FIXED: Real-time user location (for service orders)
+  // Made completely optional - only populated when user shares live location
+  userLiveLocation: {
+    type: {
+      type: String,
+      enum: ['Point'],
+      required: false  // ✅ Changed from default to optional
+    },
+    coordinates: {
+      type: [Number], // [longitude, latitude] - GeoJSON format
+      required: false,
+      validate: {
+        validator: function(v) {
+          // If coordinates exist, must have exactly 2 elements
+          return !v || (Array.isArray(v) && v.length === 2);
+        },
+        message: 'Coordinates must be an array of [longitude, latitude]'
+      }
+    },
+    address: {
+      type: String,
+      required: false
+    },
+    lastUpdated: {
+      type: Date,
+      required: false
+    }
+  },
+
+  // ✅ FIXED: Real-time professional location (for service orders)
+  // Made completely optional - only populated when professional shares location
+  professionalLiveLocation: {
+    type: {
+      type: String,
+      enum: ['Point'],
+      required: false  // ✅ Changed from default to optional
+    },
+    coordinates: {
+      type: [Number], // [longitude, latitude] - GeoJSON format
+      required: false,
+      validate: {
+        validator: function(v) {
+          // If coordinates exist, must have exactly 2 elements
+          return !v || (Array.isArray(v) && v.length === 2);
+        },
+        message: 'Coordinates must be an array of [longitude, latitude]'
+      }
+    },
+    lastUpdated: {
+      type: Date,
+      required: false
+    }
+  },
+
+  // Live location tracking status
+  isLiveLocationActive: {
+    type: Boolean,
+    default: false
+  },
+
+  liveLocationStartedAt: {
+    type: Date,
+    required: false
+  },
+
+  // Payment details
   paymentMethod: {
     type: String,
-    enum: ['cod', 'online'],
+    enum: ['cod', 'online','wallet'],
     required: true
   },
+
   paymentStatus: {
     type: String,
     enum: ['pending', 'completed', 'failed', 'refunded'],
     default: 'pending'
   },
-  razorpayOrderId: String,
-  razorpayPaymentId: String,
-  razorpaySignature: String,
-  refundId: String,
-  refundAmount: {
-    type: Number,
-    default: 0
-  },
-  refundStatus: {
-    type: String,
-    enum: ['none', 'pending', 'completed', 'failed'],
-    default: 'none'
-  },
-  // Amounts
+
+  // Pricing breakdown
   subtotal: {
     type: Number,
     required: true,
     min: 0
   },
+
   deliveryFee: {
     type: Number,
     default: 0,
     min: 0
   },
+
   serviceFee: {
     type: Number,
     default: 0,
     min: 0
   },
+
   tax: {
     type: Number,
-    required: true,
+    default: 0,
     min: 0
   },
+
   totalAmount: {
     type: Number,
     required: true,
     min: 0
   },
-  // Tracking
-  trackingId: String,
-  courier: String,
-  estimatedDelivery: Date,
-  estimatedServiceTime: String,
+
+  // Service-specific fields
+  serviceOtp: {
+    type: String,
+    required: false
+  },
+
+  serviceOtpVerified: {
+    type: Boolean,
+    default: false
+  },
+
+  serviceStartedAt: {
+    type: Date,
+    required: false
+  },
+
+  estimatedServiceTime: {
+    type: Date,
+    required: false
+  },
+
+  // Delivery-specific fields
+  courier: {
+    type: String,
+    required: false
+  },
+
+  trackingNumber: {
+    type: String,
+    required: false
+  },
+
+  estimatedDelivery: {
+    type: Date,
+    required: false
+  },
+
   // Status timestamps
-  confirmedAt: Date,
-  shippedAt: Date,
-  outForDeliveryAt: Date,
-  deliveredAt: Date,
-  cancelledAt: Date,
-  cancellationReason: String
+  confirmedAt: {
+    type: Date,
+    required: false
+  },
+
+  shippedAt: {
+    type: Date,
+    required: false
+  },
+
+  outForDeliveryAt: {
+    type: Date,
+    required: false
+  },
+
+  deliveredAt: {
+    type: Date,
+    required: false
+  },
+
+  completedAt: {
+    type: Date,
+    required: false
+  },
+
+  cancellationPenalty: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+
+  cancellationPenaltyPaid: {
+    type: Boolean,
+    default: false
+  },
+
+  cancellationDebtAmount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+
+  cancelledAt: {
+    type: Date,
+    required: false
+  },
+
+  cancellationReason: {
+    type: String,
+    required: false
+  },
+
+  cancellationPenaltyApplied: {
+    type: Boolean,
+    default: false
+  },
+
+
+  refundStatus: {
+    type: String,
+    enum: ['requested', 'approved', 'completed', 'rejected'],
+    required: false
+  },
+
+  refundReason: {
+    type: String,
+    required: false
+  },
+
+  refundDescription: {
+    type: String,
+    required: false
+  },
+
+  refundType: {
+    type: String,
+    enum: ['wallet', 'original_payment'],
+    default: 'wallet'
+  },
+
+  refundAmount: {
+    type: Number,
+    required: false
+  },
+
+  refundRequestedAt: {
+    type: Date,
+    required: false
+  },
+
+  refundCompletedAt: {
+    type: Date,
+    required: false
+  },
+
+  refundRejectedAt: {
+    type: Date,
+    required: false
+  },
+
+  refundProcessedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false
+  },
+
+  refundAdminNotes: {
+    type: String,
+    required: false
+  }
 }, {
   timestamps: true
 });
 
-// Static method to generate unique order number
-orderSchema.statics.generateOrderNumber = async function() {
-  const timestamp = Date.now().toString().slice(-8);
-  const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
-  let orderNumber = `ORD${timestamp}${random}`;
-  
-  let attempts = 0;
-  const maxAttempts = 10;
-  
-  while (attempts < maxAttempts) {
-    const exists = await this.findOne({ orderNumber });
-    if (!exists) {
-      return orderNumber;
-    }
-    
-    const newRandom = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
-    orderNumber = `ORD${timestamp}${newRandom}`;
-    attempts++;
-  }
-  
-  const count = await this.countDocuments();
-  return `ORD${timestamp}${(count + 1).toString().padStart(4, '0')}`;
-};
-
-// Static method to generate 6-digit OTP
-orderSchema.statics.generateServiceOtp = function() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-};
-
-// Pre-save middleware to generate order number
-orderSchema.pre('save', async function(next) {
-  if (!this.orderNumber) {
-    try {
-      this.orderNumber = await this.constructor.generateOrderNumber();
-    } catch (error) {
-      console.error('Error generating order number:', error);
-      return next(error);
-    }
-  }
-  next();
-});
-
-// Generate OTP immediately for NEW service orders
-orderSchema.pre('save', function(next) {
-  // Only for new documents (not updates)
-  if (this.isNew) {
-    const hasServices = this.serviceItems && this.serviceItems.length > 0;
-    if (hasServices && !this.serviceOtp) {
-      this.serviceOtp = this.constructor.generateServiceOtp();
-      console.log('âœ… Generated service OTP for new order:', this.serviceOtp);
-    }
-  }
-  next();
-});
-
-// Generate tracking ID when shipped
-orderSchema.pre('save', function(next) {
-  if (this.isModified('status') && this.status === 'shipped' && !this.trackingId) {
-    const timestamp = Date.now().toString().slice(-6);
-    const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-    this.trackingId = `TRK${timestamp}${random}`;
-  }
-  next();
-});
-
-// Auto-update payment status for COD when delivered
-orderSchema.pre('save', function(next) {
-  if (this.isModified('status') && this.status === 'delivered' && this.paymentMethod === 'cod') {
-    this.paymentStatus = 'completed';
-  }
-  next();
-});
-
-// Indexes
+// Indexes for better query performance
 orderSchema.index({ user: 1, createdAt: -1 });
-orderSchema.index({ orderNumber: 1 }, { unique: true });
+orderSchema.index({ orderNumber: 1 });
 orderSchema.index({ status: 1 });
 orderSchema.index({ type: 1 });
 orderSchema.index({ createdAt: -1 });
+orderSchema.index({ isLiveLocationActive: 1 });
+orderSchema.index({ refundStatus: 1, refundRequestedAt: -1 });
 
-// Virtual for total items
-orderSchema.virtual('totalItems').get(function() {
-  const serviceItemsCount = this.serviceItems.reduce((total, item) => total + item.quantity, 0);
-  const productItemsCount = this.productItems.reduce((total, item) => total + item.quantity, 0);
-  return serviceItemsCount + productItemsCount;
-});
+// ✅ FIXED: Conditional geospatial indexes - only if coordinates exist
+// This prevents errors when coordinates are not present
+orderSchema.index(
+  { 'userLiveLocation': '2dsphere' },
+  { 
+    sparse: true,  // ✅ Only index documents that have this field
+    partialFilterExpression: {
+      'userLiveLocation.coordinates': { $exists: true, $ne: null }
+    }
+  }
+);
 
-// Instance methods
-orderSchema.methods.canBeCancelled = function() {
-  return ['placed', 'confirmed'].includes(this.status);
-};
+orderSchema.index(
+  { 'professionalLiveLocation': '2dsphere' },
+  { 
+    sparse: true,  // ✅ Only index documents that have this field
+    partialFilterExpression: {
+      'professionalLiveLocation.coordinates': { $exists: true, $ne: null }
+    }
+  }
+);
 
+// Virtual for checking if order has services
 orderSchema.methods.hasServices = function() {
   return this.serviceItems && this.serviceItems.length > 0;
+};
+
+// Virtual for checking if order has products
+orderSchema.methods.hasProducts = function() {
+  return this.productItems && this.productItems.length > 0;
+};
+
+// Virtual for checking if professional is assigned
+orderSchema.methods.isProfessionalAssigned = function(professionalEmail) {
+  if (!this.hasServices()) return false;
+  return this.serviceItems.some(
+    item => item.professionalEmail === professionalEmail.toLowerCase()
+  );
+};
+
+// Static method to generate unique order number
+orderSchema.statics.generateOrderNumber = async function() {
+  const count = await this.countDocuments();
+  const timestamp = Date.now().toString().slice(-6);
+  const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+  return `ORD${timestamp}${random}`;
+};
+
+// Pre-save middleware to generate OTP for service orders
+orderSchema.pre('save', function(next) {
+  // Generate OTP only for new service orders that don't have one
+  if (this.isNew && this.hasServices() && !this.serviceOtp) {
+    this.serviceOtp = Math.floor(100000 + Math.random() * 900000).toString();
+  }
+  
+  // ✅ IMPORTANT: Remove empty GeoJSON objects before saving
+  // This prevents MongoDB GeoJSON validation errors
+  if (this.userLiveLocation && 
+      (!this.userLiveLocation.coordinates || this.userLiveLocation.coordinates.length === 0)) {
+    this.userLiveLocation = undefined;
+  }
+  
+  if (this.professionalLiveLocation && 
+      (!this.professionalLiveLocation.coordinates || this.professionalLiveLocation.coordinates.length === 0)) {
+    this.professionalLiveLocation = undefined;
+  }
+  
+  next();
+});
+
+// ✅ FIXED: Method to update user location with proper GeoJSON structure
+orderSchema.methods.updateUserLocation = function(latitude, longitude, address) {
+  this.userLiveLocation = {
+    type: 'Point',
+    coordinates: [parseFloat(longitude), parseFloat(latitude)],  // [lng, lat] order is critical!
+    address: address || null,
+    lastUpdated: new Date()
+  };
+};
+
+// ✅ FIXED: Method to update professional location with proper GeoJSON structure
+orderSchema.methods.updateProfessionalLocation = function(latitude, longitude) {
+  this.professionalLiveLocation = {
+    type: 'Point',
+    coordinates: [parseFloat(longitude), parseFloat(latitude)],  // [lng, lat] order is critical!
+    lastUpdated: new Date()
+  };
+};
+
+// Method to start live tracking
+orderSchema.methods.startLiveTracking = function() {
+  this.isLiveLocationActive = true;
+  if (!this.liveLocationStartedAt) {
+    this.liveLocationStartedAt = new Date();
+  }
+};
+
+// Method to stop live tracking
+orderSchema.methods.stopLiveTracking = function() {
+  this.isLiveLocationActive = false;
 };
 
 const Order = mongoose.model('Order', orderSchema);

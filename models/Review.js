@@ -1,4 +1,4 @@
-// server/models/Review.js
+// server/models/Review.js - FIXED VALIDATION
 const mongoose = require('mongoose');
 
 const reviewSchema = new mongoose.Schema({
@@ -43,7 +43,6 @@ const reviewSchema = new mongoose.Schema({
     trim: true,
     maxlength: 1000
   },
-  // Media uploads (images/videos)
   media: [{
     url: {
       type: String,
@@ -59,7 +58,6 @@ const reviewSchema = new mongoose.Schema({
       required: true
     }
   }],
-  // Admin response to review
   adminResponse: {
     comment: String,
     respondedAt: Date,
@@ -68,7 +66,6 @@ const reviewSchema = new mongoose.Schema({
       ref: 'User'
     }
   },
-  // Helpful votes
   helpful: {
     type: Number,
     default: 0
@@ -83,13 +80,11 @@ const reviewSchema = new mongoose.Schema({
       enum: ['up', 'down']
     }
   }],
-  // Review status
   status: {
     type: String,
     enum: ['pending', 'approved', 'rejected'],
     default: 'approved'
   },
-  // Verification
   isVerifiedPurchase: {
     type: Boolean,
     default: true
@@ -107,19 +102,50 @@ reviewSchema.index({ order: 1 });
 reviewSchema.index({ status: 1 });
 reviewSchema.index({ rating: 1 });
 
-// Validation: Must have either productId, serviceId, or professionalId, not multiple
+// FIXED VALIDATION: Professional reviews can have both professionalId and serviceId
 reviewSchema.pre('validate', function(next) {
   const hasProduct = !!this.productId;
   const hasService = !!this.serviceId;
   const hasProfessional = !!this.professionalId;
   
-  const count = [hasProduct, hasService, hasProfessional].filter(Boolean).length;
-  
-  if (count !== 1) {
-    next(new Error('Review must have exactly one of: productId, serviceId, or professionalId'));
-  } else {
-    next();
+  // For professional reviews: must have professionalId and serviceId
+  if (this.type === 'professional') {
+    if (!hasProfessional) {
+      return next(new Error('Professional review must have professionalId'));
+    }
+    if (!hasService) {
+      return next(new Error('Professional review must have serviceId for context'));
+    }
+    // Professional reviews should not have productId
+    if (hasProduct) {
+      return next(new Error('Professional review cannot have productId'));
+    }
+    return next();
   }
+  
+  // For product reviews: must have ONLY productId
+  if (this.type === 'product') {
+    if (!hasProduct) {
+      return next(new Error('Product review must have productId'));
+    }
+    if (hasService || hasProfessional) {
+      return next(new Error('Product review cannot have serviceId or professionalId'));
+    }
+    return next();
+  }
+  
+  // For service reviews: must have ONLY serviceId
+  if (this.type === 'service') {
+    if (!hasService) {
+      return next(new Error('Service review must have serviceId'));
+    }
+    if (hasProduct || hasProfessional) {
+      return next(new Error('Service review cannot have productId or professionalId'));
+    }
+    return next();
+  }
+  
+  next(new Error('Invalid review type'));
 });
 
 // Update product/service/professional average rating after save
@@ -186,8 +212,15 @@ async function updateServiceRating(serviceId) {
   const Service = mongoose.model('Service');
   const Review = mongoose.model('Review');
   
+  // Only count service reviews (not professional reviews)
   const stats = await Review.aggregate([
-    { $match: { serviceId: serviceId, status: 'approved' } },
+    { 
+      $match: { 
+        serviceId: serviceId, 
+        status: 'approved',
+        type: 'service' // Only service reviews
+      } 
+    },
     {
       $group: {
         _id: null,
@@ -278,7 +311,13 @@ reviewSchema.statics.getProductSummary = async function(productId) {
 // Static method to get review summary for service
 reviewSchema.statics.getServiceSummary = async function(serviceId) {
   const summary = await this.aggregate([
-    { $match: { serviceId: new mongoose.Types.ObjectId(serviceId), status: 'approved' } },
+    { 
+      $match: { 
+        serviceId: new mongoose.Types.ObjectId(serviceId), 
+        status: 'approved',
+        type: 'service' // Only service reviews
+      } 
+    },
     {
       $group: {
         _id: '$rating',
@@ -289,7 +328,8 @@ reviewSchema.statics.getServiceSummary = async function(serviceId) {
 
   const total = await this.countDocuments({ 
     serviceId: serviceId, 
-    status: 'approved' 
+    status: 'approved',
+    type: 'service'
   });
 
   let averageRating = 0;

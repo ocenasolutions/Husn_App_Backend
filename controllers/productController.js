@@ -1,6 +1,7 @@
 // server/controllers/productController.js
 const Product = require('../models/Product');
 const { deleteFromS3 } = require('../config/s3Config');
+const { sendStockAvailableNotification } = require('../services/stockNotificationService');
 
 // Get all products (Public)
 exports.getAllProducts = async (req, res) => {
@@ -479,20 +480,21 @@ exports.updateProduct = async (req, res) => {
     await product.save();
     await product.populate('createdBy', 'name email');
 
-    // ✨ CREATE NOTIFICATIONS FOR STOCK CHANGES
-    if (stock !== undefined && stock !== oldStock) {
-      try {
-        const newStock = parseInt(stock);
-        if (newStock === 0 && oldStock > 0) {
-          await Notification.createOutOfStockNotification(product);
-          console.log('✅ Out of stock notification created');
-        } else if (newStock <= 5 && oldStock > 5) {
-          await Notification.createLowStockNotification(product);
-          console.log('✅ Low stock notification created');
-        }
-      } catch (notifError) {
-        console.error('⚠️ Failed to create stock notification:', notifError);
-      }
+    // ✨ CHECK IF PRODUCT CAME BACK IN STOCK AND SEND NOTIFICATIONS
+    const wasOutOfStock = oldStock === 0 || oldStockStatus === 'out-of-stock';
+    const isNowInStock = product.stock > 0 && product.stockStatus !== 'out-of-stock';
+    
+    if (wasOutOfStock && isNowInStock) {
+      console.log(`🔔 Product "${product.name}" is back in stock, triggering notifications...`);
+      
+      // Send notifications asynchronously (don't wait for completion)
+      sendStockAvailableNotification(product._id)
+        .then(result => {
+          console.log('✅ Stock notifications sent:', result);
+        })
+        .catch(error => {
+          console.error('❌ Error sending stock notifications:', error);
+        });
     }
 
     res.json({

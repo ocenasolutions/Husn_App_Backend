@@ -1,179 +1,183 @@
-// server/config/socketConfig.js
-const socketIO = require('socket.io');
+const { Server } = require('socket.io');
 
 let io;
 
-const initializeSocket = (server) => {
-  io = socketIO(server, {
+function initializeSocket(server) {
+  io = new Server(server, {
     cors: {
       origin: "*",
-      methods: ["GET", "POST"],
-      credentials: true
+      methods: ["GET", "POST", "PATCH"]
     },
     pingTimeout: 60000,
-    pingInterval: 25000,
+    pingInterval: 25000
   });
 
-  // Store active tracking sessions
-  const activeTracking = new Map();
-  // Map professionalId to socketId
-  const professionalSockets = new Map();
-  // Map userId to socketId
-  const userSockets = new Map();
-
   io.on('connection', (socket) => {
-    console.log('✅ New client connected:', socket.id);
+    console.log('✅ Client connected:', socket.id);
 
-    // Professional connects and registers
-    socket.on('professional:register', ({ professionalId, orderId }) => {
-      console.log(`🚗 Professional ${professionalId} registered for order ${orderId}`);
-      
-      professionalSockets.set(professionalId, socket.id);
-      socket.professionalId = professionalId;
-      socket.orderId = orderId;
-      
-      // Join order-specific room
-      socket.join(`order:${orderId}`);
-      
-      // Store tracking session
-      activeTracking.set(orderId, {
-        professionalId,
-        professionalSocketId: socket.id,
-        startedAt: new Date(),
-        lastLocation: null
-      });
+    // ===== RIDE TRACKING =====
+    // Join ride room
+    socket.on('join-ride', (rideId) => {
+      socket.join(`ride-${rideId}`);
+      console.log(`User joined ride room: ride-${rideId}`);
+    });
 
-      // Notify user that professional is ready
-      io.to(`order:${orderId}`).emit('tracking:started', {
-        orderId,
-        professionalId,
-        startedAt: new Date()
+    // Leave ride room
+    socket.on('leave-ride', (rideId) => {
+      socket.leave(`ride-${rideId}`);
+      console.log(`User left ride room: ride-${rideId}`);
+    });
+
+    // Driver location update (real-time streaming)
+    socket.on('update-location', (data) => {
+      const { rideId, latitude, longitude } = data;
+      
+      // Broadcast to all users in the ride room
+      io.to(`ride-${rideId}`).emit('driver-location-updated', {
+        latitude,
+        longitude,
+        timestamp: new Date()
       });
     });
 
-    // User connects to track their order
-    socket.on('user:track', ({ userId, orderId }) => {
-      console.log(`👤 User ${userId} tracking order ${orderId}`);
+    // Driver status updates
+    socket.on('update-status', (data) => {
+      const { rideId, status } = data;
       
-      userSockets.set(userId, socket.id);
-      socket.userId = userId;
-      socket.orderId = orderId;
-      
-      // Join order-specific room
-      socket.join(`order:${orderId}`);
-
-      // Send current tracking status if exists
-      const trackingSession = activeTracking.get(orderId);
-      if (trackingSession && trackingSession.lastLocation) {
-        socket.emit('location:update', trackingSession.lastLocation);
-      }
+      io.to(`ride-${rideId}`).emit('ride-status-updated', {
+        rideId,
+        status,
+        timestamp: new Date()
+      });
     });
 
-    // Professional sends location updates
-    socket.on('location:update', (locationData) => {
-      const { orderId, latitude, longitude, heading, speed } = locationData;
-      
-      if (!orderId) {
-        console.error('❌ Location update missing orderId');
-        return;
-      }
+    // ===== ORDER/SERVICE TRACKING =====
+    // Join order room (for both user and admin)
+    socket.on('join-order', (orderId) => {
+      socket.join(`order-${orderId}`);
+      console.log(`📦 Client joined order room: order-${orderId}`);
+    });
 
-      const timestamp = new Date();
-      const update = {
+    // Leave order room
+    socket.on('leave-order', (orderId) => {
+      socket.leave(`order-${orderId}`);
+      console.log(`📦 Client left order room: order-${orderId}`);
+    });
+
+    // Join admin monitoring room (for all active orders)
+    socket.on('join-admin-monitoring', () => {
+      socket.join('admin-monitoring');
+      console.log('👨‍💼 Admin joined monitoring room');
+    });
+
+    // Leave admin monitoring room
+    socket.on('leave-admin-monitoring', () => {
+      socket.leave('admin-monitoring');
+      console.log('👨‍💼 Admin left monitoring room');
+    });
+
+    // User location update (for service orders)
+    socket.on('update-user-location', (data) => {
+      const { orderId, latitude, longitude, address } = data;
+      
+      console.log(`📍 User location update for order ${orderId}:`, { latitude, longitude });
+      
+      // Broadcast to specific order room
+      io.to(`order-${orderId}`).emit('user-location-updated', {
         orderId,
         latitude,
         longitude,
-        heading: heading || 0,
-        speed: speed || 0,
-        timestamp
-      };
-
-      // Update tracking session
-      const trackingSession = activeTracking.get(orderId);
-      if (trackingSession) {
-        trackingSession.lastLocation = update;
-      }
-
-      // Broadcast to all users tracking this order
-      socket.to(`order:${orderId}`).emit('location:update', update);
+        address,
+        timestamp: new Date()
+      });
       
-      console.log(`📍 Location update for order ${orderId}:`, {
-        lat: latitude.toFixed(6),
-        lng: longitude.toFixed(6)
+      // Also broadcast to admin monitoring room
+      io.to('admin-monitoring').emit('order-location-updated', {
+        orderId,
+        type: 'user',
+        latitude,
+        longitude,
+        address,
+        timestamp: new Date()
       });
     });
 
-    // Professional arrives at destination
-    socket.on('tracking:arrived', ({ orderId }) => {
-      console.log(`🎯 Professional arrived at order ${orderId}`);
+    // Professional location update (for service orders)
+    socket.on('update-professional-location', (data) => {
+      const { orderId, latitude, longitude } = data;
       
-      io.to(`order:${orderId}`).emit('tracking:arrived', {
+      console.log(`🔧 Professional location update for order ${orderId}:`, { latitude, longitude });
+      
+      // Broadcast to specific order room
+      io.to(`order-${orderId}`).emit('professional-location-updated', {
         orderId,
-        arrivedAt: new Date()
+        latitude,
+        longitude,
+        timestamp: new Date()
+      });
+      
+      // Also broadcast to admin monitoring room
+      io.to('admin-monitoring').emit('order-location-updated', {
+        orderId,
+        type: 'professional',
+        latitude,
+        longitude,
+        timestamp: new Date()
       });
     });
 
-    // Service completed
-    socket.on('tracking:completed', ({ orderId }) => {
-      console.log(`✅ Service completed for order ${orderId}`);
+    // Order status updates
+    socket.on('update-order-status', (data) => {
+      const { orderId, status } = data;
       
-      io.to(`order:${orderId}`).emit('tracking:completed', {
+      console.log(`📊 Order status update: ${orderId} -> ${status}`);
+      
+      io.to(`order-${orderId}`).emit('order-status-updated', {
         orderId,
-        completedAt: new Date()
+        status,
+        timestamp: new Date()
       });
+      
+      // Notify admin
+      io.to('admin-monitoring').emit('order-status-updated', {
+        orderId,
+        status,
+        timestamp: new Date()
+      });
+    });
 
-      // Clean up tracking session
-      activeTracking.delete(orderId);
+    // Notify when professional is assigned
+    socket.on('professional-assigned', (data) => {
+      const { orderId, professionalName } = data;
+      
+      console.log(`🔧 Professional assigned to order ${orderId}: ${professionalName}`);
+      
+      io.to(`order-${orderId}`).emit('professional-assigned-notification', {
+        orderId,
+        professionalName,
+        timestamp: new Date()
+      });
     });
 
     // Handle disconnection
     socket.on('disconnect', () => {
       console.log('❌ Client disconnected:', socket.id);
-
-      // Clean up professional socket mapping
-      if (socket.professionalId) {
-        professionalSockets.delete(socket.professionalId);
-        
-        // Notify users that professional disconnected
-        if (socket.orderId) {
-          io.to(`order:${socket.orderId}`).emit('tracking:disconnected', {
-            orderId: socket.orderId,
-            reason: 'Professional disconnected'
-          });
-        }
-      }
-
-      // Clean up user socket mapping
-      if (socket.userId) {
-        userSockets.delete(socket.userId);
-      }
     });
 
-    // Handle errors
+    // Error handling
     socket.on('error', (error) => {
       console.error('Socket error:', error);
     });
   });
 
   return io;
-};
+}
 
-const getIO = () => {
+function getIO() {
   if (!io) {
-    throw new Error('Socket.IO not initialized');
+    throw new Error('Socket.io not initialized');
   }
   return io;
-};
+}
 
-// Utility function to emit to specific order
-const emitToOrder = (orderId, event, data) => {
-  if (io) {
-    io.to(`order:${orderId}`).emit(event, data);
-  }
-};
-
-module.exports = {
-  initializeSocket,
-  getIO,
-  emitToOrder
-};
+module.exports = { initializeSocket, getIO };

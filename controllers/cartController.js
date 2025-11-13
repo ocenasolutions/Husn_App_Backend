@@ -201,3 +201,82 @@ exports.clearCart = async (req, res) => {
     });
   }
 };
+
+
+// Add this function to your cart controller (cartRoutes.js or similar)
+
+// Check for wallet debt before allowing service checkout
+exports.checkWalletDebtBeforeCheckout = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    const Wallet = require('../models/Wallet');
+    let wallet = await Wallet.findOne({ userId });
+    
+    // If no wallet or positive balance, allow checkout
+    if (!wallet || wallet.balance >= 0) {
+      return res.json({
+        success: true,
+        canProceed: true,
+        message: 'You can proceed with checkout'
+      });
+    }
+
+    // User has negative balance (debt)
+    const debtAmount = Math.abs(wallet.balance);
+    
+    return res.json({
+      success: true,
+      canProceed: false,
+      hasDebt: true,
+      debtAmount: debtAmount,
+      message: `You have an outstanding cancellation penalty of ₹${debtAmount.toFixed(2)}. Please clear this amount before booking new services.`
+    });
+
+  } catch (error) {
+    console.error('Check wallet debt error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check wallet status'
+    });
+  }
+};
+
+// Middleware to prevent service orders if user has debt
+exports.preventServiceOrderWithDebt = async (req, res, next) => {
+  try {
+    const userId = req.user._id;
+    const { serviceItems = [] } = req.body;
+
+    // Only check if order contains services
+    if (!serviceItems || serviceItems.length === 0) {
+      return next();
+    }
+
+    const Wallet = require('../models/Wallet');
+    let wallet = await Wallet.findOne({ userId });
+    
+    // If no wallet or positive balance, allow order
+    if (!wallet || wallet.balance >= 0) {
+      return next();
+    }
+
+    // User has negative balance (debt)
+    const debtAmount = Math.abs(wallet.balance);
+    
+    return res.status(403).json({
+      success: false,
+      message: `You have an outstanding cancellation penalty of ₹${debtAmount.toFixed(2)}. Please clear this amount before booking new services.`,
+      hasDebt: true,
+      debtAmount: debtAmount,
+      canProceed: false
+    });
+
+  } catch (error) {
+    console.error('Debt check middleware error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to verify wallet status'
+    });
+  }
+};

@@ -1,9 +1,11 @@
 const User = require('../models/User');
+const Professional = require('../models/Professional');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const axios = require('axios');
 const { OAuth2Client } = require('google-auth-library');
 const { sendOTPEmail, sendWelcomeEmail } = require('../utils/emailService');
+const { createWallet } = require('./walletController');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key';
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'your-refresh-secret-key';
@@ -13,10 +15,22 @@ const GOOGLE_ANDROID_CLIENT_ID = process.env.GOOGLE_ANDROID_CLIENT_ID;
 
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
+// Admin emails list
+const ADMIN_EMAILS = [
+  'testingaditya5@gmail.com',
+  'aditya2.ocena@gmail.com',
+  'testing.ocena@gmail.com',
+];
+
 // Generate tokens
-const generateTokens = (userId) => {
-  const accessToken = jwt.sign({ userId }, JWT_SECRET, { expiresIn: '15m' });
-  const refreshToken = jwt.sign({ userId }, JWT_REFRESH_SECRET, { expiresIn: '7d' });
+const generateTokens = (userId, isProfessional = false) => {
+  const payload = { 
+    userId, 
+    isProfessional,
+    timestamp: Date.now()
+  };
+  const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '15d' });
+  const refreshToken = jwt.sign(payload, JWT_REFRESH_SECRET, { expiresIn: '7d' });
   return { accessToken, refreshToken };
 };
 
@@ -72,7 +86,7 @@ const verifyGoogleAccessToken = async (accessToken) => {
 // Signup Controller - Step 1: Send OTP
 exports.signupSendOTP = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, role } = req.body;
 
     // Validation
     if (!name || !email || !password) {
@@ -96,13 +110,30 @@ exports.signupSendOTP = async (req, res) => {
       });
     }
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
-    if (existingUser && existingUser.isVerified) {
-      return res.status(409).json({
-        success: false,
-        message: 'User already exists with this email'
-      });
+    const emailLower = email.toLowerCase();
+
+    // Determine if user is admin
+    const isAdmin = ADMIN_EMAILS.includes(emailLower);
+    const userRole = isAdmin ? 'admin' : (role || 'professional');
+
+    // Check if email already exists
+    if (isAdmin) {
+      const existingUser = await User.findOne({ email: emailLower });
+      if (existingUser && existingUser.isVerified) {
+        return res.status(409).json({
+          success: false,
+          message: 'User already exists with this email'
+        });
+      }
+    } else {
+      // For professionals, check Professional collection
+      const existingProfessional = await Professional.findOne({ email: emailLower });
+      if (existingProfessional) {
+        return res.status(409).json({
+          success: false,
+          message: 'Professional already exists with this email'
+        });
+      }
     }
 
     // Generate OTP
@@ -111,13 +142,15 @@ exports.signupSendOTP = async (req, res) => {
     // Store signup data temporarily in Redis with OTP
     const signupData = {
       name: name.trim(),
-      email: email.toLowerCase(),
+      email: emailLower,
       password,
-      otp
+      role: userRole,
+      otp,
+      isProfessional: !isAdmin
     };
 
     if (req.app.locals.redis) {
-      await req.app.locals.redis.setEx(`signup:${email.toLowerCase()}`, 10 * 60, JSON.stringify(signupData)); // 10 minutes
+      await req.app.locals.redis.setEx(`signup:${emailLower}`, 10 * 60, JSON.stringify(signupData));
     }
 
     // Send OTP via email
@@ -125,7 +158,8 @@ exports.signupSendOTP = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: 'OTP sent to your email for account verification'
+      message: 'OTP sent to your email for account verification',
+      role: userRole
     });
 
   } catch (error) {
@@ -149,10 +183,12 @@ exports.signupVerifyOTP = async (req, res) => {
       });
     }
 
+    const emailLower = email.toLowerCase();
+
     // Get signup data from Redis
     let signupDataStr = null;
     if (req.app.locals.redis) {
-      signupDataStr = await req.app.locals.redis.get(`signup:${email.toLowerCase()}`);
+      signupDataStr = await req.app.locals.redis.get(`signup:${emailLower}`);
     }
 
     if (!signupDataStr) {
@@ -171,61 +207,113 @@ exports.signupVerifyOTP = async (req, res) => {
       });
     }
 
-    // Check again if user exists (in case they registered while OTP was pending)
-    const existingUser = await User.findOne({ email: signupData.email });
-    if (existingUser && existingUser.isVerified) {
-      return res.status(409).json({
-        success: false,
-        message: 'User already exists with this email'
-      });
-    }
+    let userData;
+    let isProfessional = signupData.isProfessional;
 
-    let user;
-    if (existingUser && !existingUser.isVerified) {
-      // Update existing unverified user
-      user = existingUser;
-      user.name = signupData.name;
-      user.password = signupData.password;
-      user.isVerified = true;
-    } else {
-      // Create new user
-      user = new User({
+    if (isProfessional) {
+      // Create Professional account
+      const professional = new Professional({
         name: signupData.name,
         email: signupData.email,
-        password: signupData.password,
-        isVerified: true
+        phone: null,
+        role: 'Professional',
+        rating: 5.0,
+        isActive: true,
+        status: 'active',
+        // Store password temporarily for authentication
+        // Note: You'll need to add password field to Professional model
+        password: signupData.password
+      });
+
+      await professional.save();
+      userData = professional.toJSON();
+      userData.role = 'professional';
+
+      // Generate tokens with professional flag
+      const { accessToken, refreshToken } = generateTokens(professional._id, true);
+
+      // Cache session in Redis
+      if (req.app.locals.redis) {
+        await req.app.locals.redis.setEx(
+          `session:${accessToken}`, 
+          7 * 24 * 60 * 60, 
+          JSON.stringify({ id: professional._id, isProfessional: true })
+        );
+        await req.app.locals.redis.del(`signup:${emailLower}`);
+      }
+
+      // Send welcome email
+      try {
+        await sendWelcomeEmail(professional.email, professional.name);
+      } catch (emailError) {
+        console.error('Welcome email error:', emailError);
+      }
+
+      res.status(201).json({
+        success: true,
+        message: 'Professional account created successfully',
+        user: userData,
+        tokens: { accessToken, refreshToken }
+      });
+
+    } else {
+      // Create Admin/User account
+      let user = await User.findOne({ email: signupData.email });
+      
+      if (user && !user.isVerified) {
+        user.name = signupData.name;
+        user.password = signupData.password;
+        user.role = signupData.role;
+        user.isVerified = true;
+      } else {
+        user = new User({
+          name: signupData.name,
+          email: signupData.email,
+          password: signupData.password,
+          role: signupData.role,
+          isVerified: true
+        });
+      }
+
+      await user.save();
+
+      // Create wallet for admin/user
+      try {
+        await createWallet(user._id);
+      } catch (walletError) {
+        console.error('Wallet creation error during signup:', walletError);
+      }
+
+      // Generate tokens
+      const { accessToken, refreshToken } = generateTokens(user._id, false);
+
+      user.refreshToken = refreshToken;
+      await user.save();
+
+      // Cache session in Redis
+      if (req.app.locals.redis) {
+        await req.app.locals.redis.setEx(
+          `session:${accessToken}`, 
+          7 * 24 * 60 * 60, 
+          JSON.stringify({ id: user._id, isProfessional: false })
+        );
+        await req.app.locals.redis.del(`signup:${emailLower}`);
+      }
+
+      // Send welcome email
+      try {
+        await sendWelcomeEmail(user.email, user.name);
+      } catch (emailError) {
+        console.error('Welcome email error:', emailError);
+      }
+
+      res.status(201).json({
+        success: true,
+        message: 'Account created successfully',
+        user: user.toJSON(),
+        tokens: { accessToken, refreshToken }
       });
     }
-
-    await user.save();
-
-    // Generate tokens
-    const { accessToken, refreshToken } = generateTokens(user._id);
-
-    // Save refresh token to user
-    user.refreshToken = refreshToken;
-    await user.save();
-
-    // Cache session in Redis
-    if (req.app.locals.redis) {
-      await req.app.locals.redis.setEx(`session:${accessToken}`, 7 * 24 * 60 * 60, user._id.toString());
-      // Clean up signup data
-      await req.app.locals.redis.del(`signup:${email.toLowerCase()}`);
-    }
-
-    // Send welcome email
-    try {
-      await sendWelcomeEmail(user.email, user.name);
-    } catch (emailError) {
-      console.error('Welcome email error:', emailError);
-    }
-
-    res.status(201).json({
-      success: true,
-      message: 'Account created successfully',
-      user: user.toJSON(),
-      tokens: { accessToken, refreshToken }
-    });
 
   } catch (error) {
     console.error('Signup verify OTP error:', error);
@@ -239,7 +327,7 @@ exports.signupVerifyOTP = async (req, res) => {
 // Login Controller
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, requestedRole } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({
@@ -248,48 +336,124 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Find user
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) {
-      return res.status(401).json({
+    const emailLower = email.toLowerCase();
+    const isAdminEmail = ADMIN_EMAILS.includes(emailLower);
+
+    // If trying to login as admin, check admin list first
+    if (requestedRole === 'admin' && !isAdminEmail) {
+      return res.status(403).json({
         success: false,
-        message: 'Invalid email or password'
+        message: 'You are not authorized as an admin. If you believe this is an error, please contact support.'
       });
     }
 
-    // Check if account is verified
-    if (!user.isVerified) {
-      return res.status(401).json({
-        success: false,
-        message: 'Please verify your account first'
-      });
-    }
+    let userData;
+    let isProfessional = false;
 
-    // Check password
-    const isValidPassword = await user.comparePassword(password);
-    if (!isValidPassword) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid email or password'
-      });
-    }
+    if (isAdminEmail) {
+      // Admin login - check User collection
+      const user = await User.findOne({ email: emailLower });
+      
+      if (!user) {
+        return res.status(403).json({
+          success: false,
+          message: 'You are not authorized as an admin. If you believe this is an error, please contact support.'
+        });
+      }
+
+      if (!user.isVerified) {
+        return res.status(401).json({
+          success: false,
+          message: 'Please verify your account first'
+        });
+      }
+
+      const isValidPassword = await user.comparePassword(password);
+      if (!isValidPassword) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid email or password'
+        });
+      }
+
+      // Update role if needed
+      if (user.role !== 'admin') {
+        user.role = 'admin';
+        await user.save();
+      }
+
+      userData = user;
+      isProfessional = false;
+
+   } else {
+  // Professional login - check Professional collection
+  const professional = await Professional.findOne({ email: emailLower });
+  
+  if (!professional) {
+    return res.status(401).json({
+      success: false,
+      message: 'Invalid email or password'
+    });
+  }
+
+  // Check if professional has a password
+  if (!professional.password) {
+    return res.status(401).json({
+      success: false,
+      message: 'Account not properly configured. Please contact support or sign up again.'
+    });
+  }
+
+  // Use the comparePassword method from Professional model
+  const isValidPassword = await professional.comparePassword(password);
+  
+  if (!isValidPassword) {
+    return res.status(401).json({
+      success: false,
+      message: 'Invalid email or password'
+    });
+  }
+
+  if (!professional.isActive || professional.status !== 'active') {
+    return res.status(403).json({
+      success: false,
+      message: 'Your account is not active. Please contact admin.'
+    });
+  }
+
+  userData = professional;
+  isProfessional = true;
+  // Add role for consistency
+  userData.role = 'professional';
+}
 
     // Generate tokens
-    const { accessToken, refreshToken } = generateTokens(user._id);
+    const { accessToken, refreshToken } = generateTokens(userData._id, isProfessional);
 
     // Update refresh token
-    user.refreshToken = refreshToken;
-    await user.save();
+    if (isProfessional) {
+      // Store in Professional
+      userData.refreshToken = refreshToken;
+      await Professional.findByIdAndUpdate(userData._id, { refreshToken });
+    } else {
+      // Store in User
+      userData.refreshToken = refreshToken;
+      await userData.save();
+    }
 
     // Cache session in Redis
     if (req.app.locals.redis) {
-      await req.app.locals.redis.setEx(`session:${accessToken}`, 7 * 24 * 60 * 60, user._id.toString());
+      await req.app.locals.redis.setEx(
+        `session:${accessToken}`, 
+        7 * 24 * 60 * 60, 
+        JSON.stringify({ id: userData._id, isProfessional })
+      );
     }
 
     res.json({
       success: true,
       message: 'Login successful',
-      user: user.toJSON(),
+      user: isProfessional ? userData.toJSON() : userData.toJSON(),
       tokens: { accessToken, refreshToken }
     });
 
@@ -305,7 +469,7 @@ exports.login = async (req, res) => {
 // Enhanced Google Auth Controller
 exports.googleAuth = async (req, res) => {
   try {
-    const { accessToken, idToken, userInfo } = req.body;
+    const { accessToken, idToken, userInfo, role } = req.body;
 
     if (!accessToken && !idToken) {
       return res.status(400).json({
@@ -316,7 +480,7 @@ exports.googleAuth = async (req, res) => {
 
     let googleUserData = null;
 
-    // Verify ID token first (more secure)
+    // Verify ID token first
     if (idToken) {
       const idTokenResult = await verifyGoogleToken(idToken);
       if (idTokenResult.success) {
@@ -333,7 +497,7 @@ exports.googleAuth = async (req, res) => {
       }
     }
 
-    // Fallback to access token verification
+    // Fallback to access token
     if (!googleUserData && accessToken) {
       const accessTokenResult = await verifyGoogleAccessToken(accessToken);
       if (accessTokenResult.success) {
@@ -359,7 +523,7 @@ exports.googleAuth = async (req, res) => {
         picture: userInfo.photo,
         givenName: userInfo.givenName,
         familyName: userInfo.familyName,
-        emailVerified: true, // Assume verified if coming from Google SDK
+        emailVerified: true,
       };
     }
 
@@ -370,89 +534,146 @@ exports.googleAuth = async (req, res) => {
       });
     }
 
-    // Check if user exists
-    let user = await User.findOne({ 
-      $or: [
-        { googleId: googleUserData.id },
-        { email: googleUserData.email }
-      ]
-    });
+    const emailLower = googleUserData.email.toLowerCase();
+    const isAdmin = ADMIN_EMAILS.includes(emailLower);
+    const userRole = isAdmin ? 'admin' : (role || 'professional');
 
-    if (user) {
-      // Update existing user
-      let updated = false;
-      
-      if (!user.googleId) {
-        user.googleId = googleUserData.id;
-        updated = true;
-      }
-      
-      if (!user.googleEmail && googleUserData.email) {
-        user.googleEmail = googleUserData.email;
-        updated = true;
-      }
-      
-      if (!user.avatar && googleUserData.picture) {
-        user.avatar = googleUserData.picture;
-        updated = true;
-      }
-      
-      if (!user.isVerified && googleUserData.emailVerified) {
-        user.isVerified = true;
-        updated = true;
-      }
+    let userData;
+    let isProfessional = !isAdmin;
 
-      // Update name if it's more complete from Google
-      if (googleUserData.name && googleUserData.name.length > user.name.length) {
-        user.name = googleUserData.name;
-        updated = true;
-      }
-
-      if (updated) {
-        await user.save();
-      }
-    } else {
-      // Create new user
-      user = new User({
-        name: googleUserData.name || `${googleUserData.givenName} ${googleUserData.familyName}`.trim(),
-        email: googleUserData.email,
-        googleId: googleUserData.id,
-        googleEmail: googleUserData.email,
-        avatar: googleUserData.picture,
-        isVerified: googleUserData.emailVerified || true
+    if (isProfessional) {
+      // Check Professional collection
+      let professional = await Professional.findOne({ 
+        $or: [
+          { googleId: googleUserData.id },
+          { email: emailLower }
+        ]
       });
-      await user.save();
 
-      // Send welcome email
-      try {
-        await sendWelcomeEmail(user.email, user.name);
-      } catch (emailError) {
-        console.error('Welcome email error:', emailError);
+      if (professional) {
+        // Update existing professional
+        let updated = false;
+        if (!professional.googleId) {
+          professional.googleId = googleUserData.id;
+          updated = true;
+        }
+        if (!professional.profilePicture && googleUserData.picture) {
+          professional.profilePicture = googleUserData.picture;
+          updated = true;
+        }
+        if (updated) {
+          await professional.save();
+        }
+        userData = professional;
+      } else {
+        // Create new professional
+        professional = new Professional({
+          name: googleUserData.name || `${googleUserData.givenName} ${googleUserData.familyName}`.trim(),
+          email: emailLower,
+          googleId: googleUserData.id,
+          profilePicture: googleUserData.picture,
+          role: 'Professional',
+          rating: 5.0,
+          isActive: true,
+          status: 'active'
+        });
+        await professional.save();
+        userData = professional;
+
+        // Send welcome email
+        try {
+          await sendWelcomeEmail(professional.email, professional.name);
+        } catch (emailError) {
+          console.error('Welcome email error:', emailError);
+        }
+      }
+      userData.role = 'professional';
+
+    } else {
+      // Admin - check User collection
+      let user = await User.findOne({ 
+        $or: [
+          { googleId: googleUserData.id },
+          { email: emailLower }
+        ]
+      });
+
+      if (user) {
+        let updated = false;
+        if (!user.googleId) {
+          user.googleId = googleUserData.id;
+          updated = true;
+        }
+        if (!user.googleEmail) {
+          user.googleEmail = emailLower;
+          updated = true;
+        }
+        if (!user.avatar && googleUserData.picture) {
+          user.avatar = googleUserData.picture;
+          updated = true;
+        }
+        if (!user.isVerified) {
+          user.isVerified = true;
+          updated = true;
+        }
+        if (user.role !== 'admin') {
+          user.role = 'admin';
+          updated = true;
+        }
+        if (updated) {
+          await user.save();
+        }
+        userData = user;
+      } else {
+        user = new User({
+          name: googleUserData.name || `${googleUserData.givenName} ${googleUserData.familyName}`.trim(),
+          email: emailLower,
+          googleId: googleUserData.id,
+          googleEmail: emailLower,
+          avatar: googleUserData.picture,
+          isVerified: true,
+          role: userRole
+        });
+        await user.save();
+        userData = user;
+
+        try {
+          await sendWelcomeEmail(user.email, user.name);
+        } catch (emailError) {
+          console.error('Welcome email error:', emailError);
+        }
       }
     }
 
     // Generate tokens
-    const { accessToken: jwtToken, refreshToken } = generateTokens(user._id);
+    const { accessToken: jwtToken, refreshToken } = generateTokens(userData._id, isProfessional);
 
     // Update refresh token
-    user.refreshToken = refreshToken;
-    await user.save();
+    if (isProfessional) {
+      await Professional.findByIdAndUpdate(userData._id, { refreshToken });
+    } else {
+      userData.refreshToken = refreshToken;
+      await userData.save();
+    }
 
     // Cache session in Redis
     if (req.app.locals.redis) {
-      await req.app.locals.redis.setEx(`session:${jwtToken}`, 7 * 24 * 60 * 60, user._id.toString());
+      await req.app.locals.redis.setEx(
+        `session:${jwtToken}`, 
+        7 * 24 * 60 * 60, 
+        JSON.stringify({ id: userData._id, isProfessional })
+      );
     }
 
     res.json({
       success: true,
       message: 'Google authentication successful',
-      user: user.toJSON(),
+      user: userData.toJSON(),
       tokens: { accessToken: jwtToken, refreshToken }
     });
 
   } catch (error) {
     console.error('Google auth error:', error);
-    
     res.status(500).json({
       success: false,
       message: 'Google authentication failed'
@@ -472,32 +693,34 @@ exports.forgotPasswordSendOTP = async (req, res) => {
       });
     }
 
-    // Check if user exists and is verified
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) {
+    const emailLower = email.toLowerCase();
+    const isAdmin = ADMIN_EMAILS.includes(emailLower);
+
+    let userData = null;
+
+    if (isAdmin) {
+      userData = await User.findOne({ email: emailLower });
+    } else {
+      userData = await Professional.findOne({ email: emailLower });
+    }
+
+    if (!userData) {
       return res.status(404).json({
         success: false,
         message: 'No account found with this email'
       });
     }
 
-    if (!user.isVerified) {
-      return res.status(400).json({
-        success: false,
-        message: 'Account not verified. Please complete signup process first.'
-      });
-    }
-
     // Generate OTP
     const otp = generateOTP();
 
-    // Store OTP in Redis with 10 minute expiry
+    // Store OTP in Redis
     if (req.app.locals.redis) {
-      await req.app.locals.redis.setEx(`forgot-password:${email.toLowerCase()}`, 10 * 60, otp);
+      await req.app.locals.redis.setEx(`forgot-password:${emailLower}`, 10 * 60, otp);
     }
 
     // Send OTP via email
-    await sendOTPEmail(email, user.name, otp);
+    await sendOTPEmail(email, userData.name, otp);
 
     res.json({
       success: true,
@@ -513,7 +736,7 @@ exports.forgotPasswordSendOTP = async (req, res) => {
   }
 };
 
-// Forgot Password - Verify OTP Controller (logs user in)
+// Forgot Password - Verify OTP Controller
 exports.forgotPasswordVerifyOTP = async (req, res) => {
   try {
     const { email, otp } = req.body;
@@ -525,56 +748,67 @@ exports.forgotPasswordVerifyOTP = async (req, res) => {
       });
     }
 
+    const emailLower = email.toLowerCase();
+
     // Get OTP from Redis
     let storedOTP = null;
     if (req.app.locals.redis) {
-      storedOTP = await req.app.locals.redis.get(`forgot-password:${email.toLowerCase()}`);
+      storedOTP = await req.app.locals.redis.get(`forgot-password:${emailLower}`);
     }
 
-    if (!storedOTP) {
+    if (!storedOTP || storedOTP !== otp) {
       return res.status(400).json({
         success: false,
-        message: 'OTP expired or invalid'
+        message: 'Invalid or expired OTP'
       });
     }
 
-    if (storedOTP !== otp) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid OTP'
-      });
+    const isAdmin = ADMIN_EMAILS.includes(emailLower);
+    let userData;
+    let isProfessional = !isAdmin;
+
+    if (isAdmin) {
+      userData = await User.findOne({ email: emailLower });
+    } else {
+      userData = await Professional.findOne({ email: emailLower });
     }
 
-    // Find user
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) {
+    if (!userData) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
 
-    // Generate tokens (log user in)
-    const { accessToken, refreshToken } = generateTokens(user._id);
+    // Generate tokens
+    const { accessToken, refreshToken } = generateTokens(userData._id, isProfessional);
 
     // Update refresh token
-    user.refreshToken = refreshToken;
-    await user.save();
+    if (isProfessional) {
+      await Professional.findByIdAndUpdate(userData._id, { refreshToken });
+    } else {
+      userData.refreshToken = refreshToken;
+      await userData.save();
+    }
 
     // Delete OTP from Redis
     if (req.app.locals.redis) {
-      await req.app.locals.redis.del(`forgot-password:${email.toLowerCase()}`);
+      await req.app.locals.redis.del(`forgot-password:${emailLower}`);
     }
 
-    // Cache session in Redis
+    // Cache session
     if (req.app.locals.redis) {
-      await req.app.locals.redis.setEx(`session:${accessToken}`, 7 * 24 * 60 * 60, user._id.toString());
+      await req.app.locals.redis.setEx(
+        `session:${accessToken}`, 
+        7 * 24 * 60 * 60, 
+        JSON.stringify({ id: userData._id, isProfessional })
+      );
     }
 
     res.json({
       success: true,
       message: 'OTP verified successfully. You are now logged in.',
-      user: user.toJSON(),
+      user: userData.toJSON(),
       tokens: { accessToken, refreshToken }
     });
 
@@ -587,7 +821,7 @@ exports.forgotPasswordVerifyOTP = async (req, res) => {
   }
 };
 
-// Legacy OTP methods for backward compatibility
+// Legacy methods
 exports.sendOTP = exports.forgotPasswordSendOTP;
 exports.verifyOTP = exports.forgotPasswordVerifyOTP;
 
@@ -603,27 +837,46 @@ exports.refreshToken = async (req, res) => {
       });
     }
 
-    // Verify refresh token
     const decoded = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
-    const user = await User.findById(decoded.userId);
+    const isProfessional = decoded.isProfessional || false;
 
-    if (!user || user.refreshToken !== refreshToken) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid refresh token'
-      });
+    let userData;
+    if (isProfessional) {
+      userData = await Professional.findById(decoded.userId);
+      if (!userData || userData.refreshToken !== refreshToken) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid refresh token'
+        });
+      }
+    } else {
+      userData = await User.findById(decoded.userId);
+      if (!userData || userData.refreshToken !== refreshToken) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid refresh token'
+        });
+      }
     }
 
     // Generate new tokens
-    const tokens = generateTokens(user._id);
+    const tokens = generateTokens(userData._id, isProfessional);
 
     // Update refresh token
-    user.refreshToken = tokens.refreshToken;
-    await user.save();
+    if (isProfessional) {
+      await Professional.findByIdAndUpdate(userData._id, { refreshToken: tokens.refreshToken });
+    } else {
+      userData.refreshToken = tokens.refreshToken;
+      await userData.save();
+    }
 
-    // Cache new session in Redis
+    // Cache new session
     if (req.app.locals.redis) {
-      await req.app.locals.redis.setEx(`session:${tokens.accessToken}`, 7 * 24 * 60 * 60, user._id.toString());
+      await req.app.locals.redis.setEx(
+        `session:${tokens.accessToken}`, 
+        7 * 24 * 60 * 60, 
+        JSON.stringify({ id: userData._id, isProfessional })
+      );
     }
 
     res.json({
@@ -645,16 +898,27 @@ exports.refreshToken = async (req, res) => {
 exports.deleteAccount = async (req, res) => {
   try {
     const { password } = req.body;
-    const user = req.user;
-    if (user.password) {
-      if (!password) {
-        return res.status(400).json({
-          success: false,
-          message: 'Password is required to delete your account'
-        });
-      }
+    const userId = req.user._id;
+    const isProfessional = req.isProfessional || false;
 
-      const isValidPassword = await user.comparePassword(password);
+    let userData;
+    if (isProfessional) {
+      userData = await Professional.findById(userId);
+    } else {
+      userData = await User.findById(userId);
+    }
+
+    if (!userData) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Verify password if it exists
+    if (userData.password && password) {
+      const bcrypt = require('bcryptjs');
+      const isValidPassword = await bcrypt.compare(password, userData.password);
       if (!isValidPassword) {
         return res.status(401).json({
           success: false,
@@ -663,26 +927,28 @@ exports.deleteAccount = async (req, res) => {
       }
     }
 
-    const userId = user._id;
-    const userEmail = user.email;
+    const userEmail = userData.email;
     const token = req.header('Authorization')?.replace('Bearer ', '');
-    if (token && req.app.locals.redis) {
-      await req.app.locals.redis.del(`session:${token}`);
-    }
+
+    // Clean up Redis
     if (req.app.locals.redis) {
+      if (token) await req.app.locals.redis.del(`session:${token}`);
       await req.app.locals.redis.del(`forgot-password:${userEmail}`);
       await req.app.locals.redis.del(`signup:${userEmail}`);
     }
-    // TODO: Clean up related data
-    // You should also delete or anonymize related data like:
-    // - User's orders, bookings, cart items, wishlist, addresses, notifications
-    
-    // Delete the user account
-    await User.findByIdAndDelete(userId);
+
+    // Delete account
+    if (isProfessional) {
+      await Professional.findByIdAndDelete(userId);
+    } else {
+      await User.findByIdAndDelete(userId);
+    }
+
     res.json({
       success: true,
       message: 'Account deleted successfully'
     });
+
   } catch (error) {
     console.error('Delete account error:', error);
     res.status(500).json({

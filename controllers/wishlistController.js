@@ -82,18 +82,23 @@ exports.addToWishlist = async (req, res) => {
 exports.removeFromWishlist = async (req, res) => {
   try {
     const { productId } = req.params;
-
-    const wishlistItem = await Wishlist.findOneAndDelete({ 
+    
+    // Try both the string and ObjectId version
+    const wishlistItem = await Wishlist.findOne({ 
       user: req.user._id, 
       product: productId 
     });
-
+    
+    console.log('Found item:', wishlistItem);
+    
     if (!wishlistItem) {
       return res.status(404).json({
         success: false,
         message: 'Wishlist item not found'
       });
     }
+    
+    await Wishlist.deleteOne({ _id: wishlistItem._id });
 
     res.json({
       success: true,
@@ -103,7 +108,8 @@ exports.removeFromWishlist = async (req, res) => {
     console.error('Remove from wishlist error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to remove product from wishlist'
+      message: 'Failed to remove product from wishlist',
+      error: error.message
     });
   }
 };

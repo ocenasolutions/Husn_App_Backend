@@ -1,4 +1,4 @@
-// server/controllers/reviewController.js
+// server/controllers/reviewController.js - FIXED VERSION
 const Review = require('../models/Review');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
@@ -11,6 +11,8 @@ exports.createReview = async (req, res) => {
   try {
     const { orderId, itemId, type, rating, comment, professionalId } = req.body;
     const userId = req.user._id;
+
+    console.log('Create review request:', { orderId, itemId, type, rating, professionalId });
 
     // Validate required fields
     if (!orderId || !itemId || !type || !rating) {
@@ -36,15 +38,17 @@ exports.createReview = async (req, res) => {
       });
     }
 
-    // Verify order is delivered
-    if (order.status !== 'delivered') {
+    console.log('Order found:', order.orderNumber, 'Status:', order.status);
+
+    // Verify order is completed/delivered
+    if (!['delivered', 'completed'].includes(order.status)) {
       return res.status(400).json({
         success: false,
-        message: 'Can only review delivered orders'
+        message: 'Order must be completed to review items'
       });
     }
 
-    // Verify the item is in the order
+    // Verify the item is in the order - FIXED LOGIC FOR PROFESSIONAL REVIEWS
     let itemExists = false;
     if (type === 'product') {
       itemExists = order.productItems.some(item => 
@@ -54,9 +58,20 @@ exports.createReview = async (req, res) => {
       itemExists = order.serviceItems.some(item => 
         item.serviceId.toString() === itemId
       );
+    } else if (type === 'professional') {
+      // For professional reviews, itemId is the serviceId
+      // Check if service exists in order
+      itemExists = order.serviceItems.some(item => 
+        item.serviceId.toString() === itemId
+      );
     }
 
     if (!itemExists) {
+      console.log('Item not found in order. Type:', type, 'ItemId:', itemId);
+      console.log('Order items:', {
+        products: order.productItems.map(i => i.productId?.toString()),
+        services: order.serviceItems.map(i => i.serviceId?.toString())
+      });
       return res.status(400).json({
         success: false,
         message: 'Item not found in this order'
@@ -151,6 +166,8 @@ exports.createReview = async (req, res) => {
       reviewData.serviceId = itemId; // Keep serviceId for reference
     }
 
+    console.log('Creating review with data:', reviewData);
+
     const review = await Review.create(reviewData);
 
     await review.populate([
@@ -159,6 +176,8 @@ exports.createReview = async (req, res) => {
       { path: 'serviceId', select: 'name image_url' },
       { path: 'professionalId', select: 'name profilePicture' }
     ]);
+
+    console.log('Review created successfully:', review._id);
 
     res.status(201).json({
       success: true,
@@ -175,6 +194,137 @@ exports.createReview = async (req, res) => {
     });
   }
 };
+
+// Get reviewable items from an order (including professionals) - FIXED
+exports.getReviewableItems = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const userId = req.user._id;
+
+    console.log('Fetching reviewable items for order:', orderId, 'user:', userId);
+
+    const order = await Order.findOne({ _id: orderId, user: userId })
+      .populate('productItems.productId', 'name primaryImage price')
+      .populate('serviceItems.serviceId', 'name image_url price');
+
+    if (!order) {
+      console.log('Order not found or access denied');
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    console.log('Order found:', order.orderNumber, 'Status:', order.status);
+
+    // FIXED: Check for both 'delivered' and 'completed' status
+    if (!['delivered', 'completed'].includes(order.status)) {
+      console.log('Order not completed yet');
+      return res.status(400).json({
+        success: false,
+        message: 'Order must be completed to review items'
+      });
+    }
+
+    // Get existing reviews for this order
+    const existingReviews = await Review.find({
+      user: userId,
+      order: orderId
+    });
+
+    console.log('Existing reviews:', existingReviews.length);
+
+    const reviewedProductIds = new Set(
+      existingReviews
+        .filter(r => r.productId)
+        .map(r => r.productId.toString())
+    );
+
+    const reviewedServiceIds = new Set(
+      existingReviews
+        .filter(r => r.serviceId && !r.professionalId)
+        .map(r => r.serviceId.toString())
+    );
+
+    const reviewedProfessionalIds = new Set(
+      existingReviews
+        .filter(r => r.professionalId)
+        .map(r => r.professionalId.toString())
+    );
+
+    // Build reviewable items list
+    const reviewableItems = [];
+
+    // Add products
+    order.productItems.forEach(item => {
+      if (item.productId) {
+        const reviewed = reviewedProductIds.has(item.productId._id.toString());
+        reviewableItems.push({
+          itemId: item.productId._id,
+          type: 'product',
+          name: item.productId.name,
+          image: item.productId.primaryImage,
+          price: item.price,
+          quantity: item.quantity,
+          reviewed
+        });
+      }
+    });
+
+    // Add services and professionals
+    order.serviceItems.forEach(item => {
+      if (item.serviceId) {
+        const reviewed = reviewedServiceIds.has(item.serviceId._id.toString());
+        reviewableItems.push({
+          itemId: item.serviceId._id,
+          type: 'service',
+          name: item.serviceId.name,
+          image: item.serviceId.image_url,
+          price: item.price,
+          quantity: item.quantity,
+          reviewed
+        });
+
+        // Add professional review option if professional is assigned
+        if (item.professionalId && item.professionalName) {
+          const professionalReviewed = reviewedProfessionalIds.has(item.professionalId.toString());
+          reviewableItems.push({
+            itemId: item.serviceId._id, // Keep service ID for order verification
+            professionalId: item.professionalId,
+            type: 'professional',
+            name: item.professionalName,
+            serviceName: item.serviceId.name,
+            image: null, // Can add professional profile picture if needed
+            price: item.price,
+            quantity: item.quantity,
+            reviewed: professionalReviewed
+          });
+        }
+      }
+    });
+
+    console.log('Reviewable items:', reviewableItems.length);
+
+    res.json({
+      success: true,
+      data: {
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        items: reviewableItems
+      }
+    });
+
+  } catch (error) {
+    console.error('Get reviewable items error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch reviewable items',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// ... (rest of the controller methods remain the same)
 
 // Get reviews for a specific product
 exports.getProductReviews = async (req, res) => {
@@ -369,124 +519,6 @@ exports.getUserReviews = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch reviews'
-    });
-  }
-};
-
-// Get reviewable items from an order (including professionals)
-exports.getReviewableItems = async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const userId = req.user._id;
-
-    const order = await Order.findOne({ _id: orderId, user: userId })
-      .populate('productItems.productId', 'name primaryImage')
-      .populate('serviceItems.serviceId', 'name image_url')
-      .populate('serviceItems.professionalId', 'name profilePicture');
-
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
-    }
-
-    if (order.status !== 'delivered') {
-      return res.status(400).json({
-        success: false,
-        message: 'Order must be delivered to review items'
-      });
-    }
-
-    // Get existing reviews for this order
-    const existingReviews = await Review.find({
-      user: userId,
-      order: orderId
-    });
-
-    const reviewedProductIds = new Set(
-      existingReviews
-        .filter(r => r.productId)
-        .map(r => r.productId.toString())
-    );
-
-    const reviewedServiceIds = new Set(
-      existingReviews
-        .filter(r => r.serviceId && !r.professionalId)
-        .map(r => r.serviceId.toString())
-    );
-
-    const reviewedProfessionalIds = new Set(
-      existingReviews
-        .filter(r => r.professionalId)
-        .map(r => r.professionalId.toString())
-    );
-
-    // Build reviewable items list
-    const reviewableItems = [];
-
-    // Add products
-    order.productItems.forEach(item => {
-      if (item.productId) {
-        const reviewed = reviewedProductIds.has(item.productId._id.toString());
-        reviewableItems.push({
-          itemId: item.productId._id,
-          type: 'product',
-          name: item.productId.name,
-          image: item.productId.primaryImage,
-          price: item.price,
-          quantity: item.quantity,
-          reviewed
-        });
-      }
-    });
-
-    // Add services and professionals
-    order.serviceItems.forEach(item => {
-      if (item.serviceId) {
-        const reviewed = reviewedServiceIds.has(item.serviceId._id.toString());
-        reviewableItems.push({
-          itemId: item.serviceId._id,
-          type: 'service',
-          name: item.serviceId.name,
-          image: item.serviceId.image_url,
-          price: item.price,
-          quantity: item.quantity,
-          reviewed
-        });
-
-        // Add professional review option if professional is assigned
-        if (item.professionalId) {
-          const professionalReviewed = reviewedProfessionalIds.has(item.professionalId._id.toString());
-          reviewableItems.push({
-            itemId: item.serviceId._id, // Keep service ID for order verification
-            professionalId: item.professionalId._id,
-            type: 'professional',
-            name: item.professionalId.name,
-            serviceName: item.serviceId.name,
-            image: item.professionalId.profilePicture,
-            price: item.price,
-            quantity: item.quantity,
-            reviewed: professionalReviewed
-          });
-        }
-      }
-    });
-
-    res.json({
-      success: true,
-      data: {
-        orderId: order._id,
-        orderNumber: order.orderNumber,
-        items: reviewableItems
-      }
-    });
-
-  } catch (error) {
-    console.error('Get reviewable items error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch reviewable items'
     });
   }
 };
