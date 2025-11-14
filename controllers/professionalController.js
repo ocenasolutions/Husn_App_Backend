@@ -3,6 +3,9 @@ const Professional = require('../models/Professional');
 const jwt = require('jsonwebtoken');
 
 // Get all professionals (with optional filters)
+
+const verificationService = require('../services/verificationService');
+
 exports.getAllProfessionals = async (req, res) => {
   try {
     const { category, active = 'true' } = req.query;
@@ -320,41 +323,57 @@ exports.updateProfile = async (req, res) => {
   }
 };
 
-// Update PAN card details
+
+// ✅ NEW: Helper function to get or create Professional record
+async function getOrCreateProfessionalRecord(userId, userEmail) {
+  let professional = await Professional.findOne({ email: userEmail });
+  
+  if (!professional) {
+    console.log('📝 Creating new Professional record for verification...');
+    professional = new Professional({
+      email: userEmail,
+      name: '', // Will be updated later
+      isActive: false, // Not active until approved
+      status: 'inactive', // Inactive until admin approval
+      profileStatus: 'inactive',
+      rating: 5.0,
+      // These will be filled during admin approval:
+      skills: [],
+      specializations: [],
+      specialization: null,
+      experience: null,
+      bio: null,
+      availableDays: []
+    });
+    await professional.save();
+    console.log('✅ Professional record created for PAN/Bank verification');
+  }
+  
+  return professional;
+}
+
+// Update PAN details
 exports.updatePANDetails = async (req, res) => {
   try {
-    const professionalId = req.user.id;
-    const { panCard, panName } = req.body;
+    const { panCard } = req.body;
 
-    if (!panCard || !panName) {
+    if (!panCard) {
       return res.status(400).json({
         success: false,
-        message: 'PAN card number and name are required'
+        message: 'PAN card number is required'
       });
     }
 
     const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
-    if (!panRegex.test(panCard)) {
+    if (!panRegex.test(panCard.toUpperCase())) {
       return res.status(400).json({
         success: false,
         message: 'Invalid PAN card format. Format: ABCDE1234F'
       });
     }
 
-    if (panName.trim().length < 3) {
-      return res.status(400).json({
-        success: false,
-        message: 'Name must be at least 3 characters'
-      });
-    }
-
-    const professional = await Professional.findById(professionalId);
-    if (!professional) {
-      return res.status(404).json({
-        success: false,
-        message: 'Professional not found'
-      });
-    }
+    // ✅ Get or create Professional record
+    const professional = await getOrCreateProfessionalRecord(req.user.id, req.user.email);
 
     if (professional.panVerified) {
       return res.status(400).json({
@@ -363,20 +382,20 @@ exports.updatePANDetails = async (req, res) => {
       });
     }
 
+    // Save only PAN number, name will be fetched during verification
     professional.panCard = panCard.toUpperCase();
-    professional.panName = panName.trim();
+    professional.panName = null; // Reset name
     professional.panVerified = false;
 
     await professional.save();
 
-    console.log('✅ PAN details updated:', professional.email);
+    console.log('✅ PAN number saved:', professional.email);
 
     res.json({
       success: true,
-      message: 'PAN details updated successfully',
+      message: 'PAN number saved. Click "Verify PAN" to fetch details.',
       data: {
         panCard: professional.panCard,
-        panName: professional.panName,
         panVerified: professional.panVerified
       }
     });
@@ -385,44 +404,91 @@ exports.updatePANDetails = async (req, res) => {
     console.error('Update PAN error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to update PAN details'
+      message: 'Failed to save PAN number'
     });
   }
 };
 
-
-  exports.verifyPAN = async (req, res) => {
+// Verify PAN
+exports.verifyPAN = async (req, res) => {
   try {
-    const professionalId = req.user.id;
+    console.log('🔍 Starting PAN verification...');
 
-    const professional = await Professional.findById(professionalId);
-    if (!professional) {
-      return res.status(404).json({
-        success: false,
-        message: 'Professional not found'
-      });
-    }
+    // ✅ Get or create Professional record
+    const professional = await getOrCreateProfessionalRecord(req.user.id, req.user.email);
 
-    if (!professional.panCard || !professional.panName) {
+    console.log('✅ Professional found:', professional.email);
+    console.log('📄 PAN Card:', professional.panCard);
+
+    if (!professional.panCard) {
+      console.log('❌ PAN number missing');
       return res.status(400).json({
         success: false,
-        message: 'PAN details not found. Please update PAN details first'
+        message: 'PAN number not found. Please save PAN number first.'
       });
     }
 
     if (professional.panVerified) {
+      console.log('⚠️ PAN already verified');
       return res.status(400).json({
         success: false,
         message: 'PAN card is already verified'
       });
     }
 
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    console.log('📞 Calling verification service...');
 
+    // Call API with PAN number only - API will return the registered name
+    const verificationResult = await verificationService.verifyPAN(
+      professional.panCard,
+      ''
+    );
+
+    console.log('📋 Verification API Response:', JSON.stringify(verificationResult, null, 2));
+
+    if (!verificationResult.success) {
+      console.log('❌ Verification API returned failure');
+      return res.status(400).json({
+        success: false,
+        message: verificationResult.message || 'PAN verification failed',
+        details: verificationResult.error,
+        apiResponse: verificationResult
+      });
+    }
+
+    if (!verificationResult.verified) {
+      console.log('❌ PAN not verified by API');
+      return res.status(400).json({
+        success: false,
+        message: verificationResult.message || 'PAN could not be verified. Please check your PAN number.',
+        apiResponse: verificationResult
+      });
+    }
+
+    // Check if name was returned from API
+    if (!verificationResult.data?.fullName && !verificationResult.data?.registeredName) {
+      console.log('⚠️ PAN valid but no name returned from API');
+      return res.status(400).json({
+        success: false,
+        message: 'PAN is valid but name could not be retrieved from the registry. Please try again later.',
+        apiResponse: verificationResult
+      });
+    }
+
+    // ✅ Verification successful - save both PAN and fetched name
     professional.panVerified = true;
+    
+    // Store the name returned from the API
+    const fetchedName = verificationResult.data.fullName || 
+                       verificationResult.data.registeredName || 
+                       verificationResult.data.name;
+    
+    professional.panName = fetchedName;
+    
     await professional.save();
 
-    console.log('✅ PAN verified:', professional.email);
+    console.log('✅ PAN verified successfully:', professional.email);
+    console.log('✅ Name fetched:', fetchedName);
 
     res.json({
       success: true,
@@ -430,15 +496,24 @@ exports.updatePANDetails = async (req, res) => {
       data: {
         panVerified: true,
         panCard: professional.panCard,
-        panName: professional.panName
+        panName: professional.panName,
+        verificationDetails: verificationResult.data
       }
     });
 
   } catch (error) {
-    console.error('Verify PAN error:', error);
+    console.error('❌ Verify PAN error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      response: error.response?.data,
+      stack: error.stack
+    });
+    
     res.status(500).json({
       success: false,
-      message: 'Failed to verify PAN card'
+      message: 'Failed to verify PAN card',
+      error: error.message,
+      details: error.response?.data || error.toString()
     });
   }
 };
@@ -446,7 +521,6 @@ exports.updatePANDetails = async (req, res) => {
 // Update bank details
 exports.updateBankDetails = async (req, res) => {
   try {
-    const professionalId = req.user.id;
     const {
       accountNumber,
       ifscCode,
@@ -484,13 +558,8 @@ exports.updateBankDetails = async (req, res) => {
       });
     }
 
-    const professional = await Professional.findById(professionalId);
-    if (!professional) {
-      return res.status(404).json({
-        success: false,
-        message: 'Professional not found'
-      });
-    }
+    // ✅ Get or create Professional record
+    const professional = await getOrCreateProfessionalRecord(req.user.id, req.user.email);
 
     if (professional.bankVerified) {
       return res.status(400).json({
@@ -533,15 +602,8 @@ exports.updateBankDetails = async (req, res) => {
 // Verify bank details
 exports.verifyBankDetails = async (req, res) => {
   try {
-    const professionalId = req.user.id;
-
-    const professional = await Professional.findById(professionalId);
-    if (!professional) {
-      return res.status(404).json({
-        success: false,
-        message: 'Professional not found'
-      });
-    }
+    // ✅ Get or create Professional record
+    const professional = await getOrCreateProfessionalRecord(req.user.id, req.user.email);
 
     if (!professional.bankDetails || !professional.bankDetails.accountNumber) {
       return res.status(400).json({
@@ -557,27 +619,101 @@ exports.verifyBankDetails = async (req, res) => {
       });
     }
 
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    console.log('🏦 Starting bank verification for:', professional.email);
+    console.log('Account:', professional.bankDetails.accountNumber);
+    console.log('IFSC:', professional.bankDetails.ifscCode);
 
+    // ✅ REAL VERIFICATION API CALL
+    const verificationResult = await verificationService.verifyBankAccount(
+      professional.bankDetails.accountNumber,
+      professional.bankDetails.ifscCode,
+      professional.bankDetails.accountHolderName
+    );
+
+    console.log('📋 Verification result:', verificationResult);
+
+    if (!verificationResult.success) {
+      return res.status(400).json({
+        success: false,
+        message: verificationResult.message || 'Bank verification failed',
+        details: verificationResult.error
+      });
+    }
+
+    if (!verificationResult.verified) {
+      return res.status(400).json({
+        success: false,
+        message: verificationResult.message || 'Bank account could not be verified. Please check your details.',
+        nameMatch: verificationResult.data?.nameMatch,
+        providedName: professional.bankDetails.accountHolderName,
+        verifiedName: verificationResult.data?.accountHolderName
+      });
+    }
+
+    // ✅ Verification successful - update database with verified details
     professional.bankVerified = true;
+    
+    // Update with verified information from API
+    if (verificationResult.data) {
+      if (verificationResult.data.accountHolderName) {
+        professional.bankDetails.accountHolderName = verificationResult.data.accountHolderName;
+      }
+      if (verificationResult.data.bankName) {
+        professional.bankDetails.bankName = verificationResult.data.bankName;
+      }
+      if (verificationResult.data.branchName) {
+        professional.bankDetails.branchName = verificationResult.data.branchName;
+      }
+    }
+    
     await professional.save();
 
-    console.log('✅ Bank details verified:', professional.email);
+    console.log('✅ Bank details verified successfully:', professional.email);
 
     res.json({
       success: true,
-      message: 'Bank details verified successfully',
+      message: 'Bank details verified successfully. Now submit your profile for admin approval.',
       data: {
         bankVerified: true,
-        bankDetails: professional.bankDetails
+        bankDetails: professional.bankDetails,
+        verificationDetails: verificationResult.data
       }
     });
 
   } catch (error) {
-    console.error('Verify bank details error:', error);
+    console.error('❌ Verify bank details error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to verify bank details'
+      message: 'Failed to verify bank details',
+      error: error.message
+    });
+  }
+};
+
+// Get current professional profile
+exports.getCurrentProfessional = async (req, res) => {
+  try {
+    const professional = await Professional.findOne({ email: req.user.email })
+      .populate('services')
+      .select('-password -refreshToken');
+
+    if (!professional) {
+      return res.status(404).json({
+        success: false,
+        message: 'Professional profile not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: professional
+    });
+
+  } catch (error) {
+    console.error('Get current professional error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch profile'
     });
   }
 };
@@ -630,7 +766,6 @@ exports.completeProfile = async (req, res) => {
   }
 };
 
-// Create professional (Admin only)
 exports.createProfessional = async (req, res) => {
   try {
     const {

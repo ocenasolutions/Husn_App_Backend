@@ -1,9 +1,10 @@
-// server/controllers/pendingProfessionalController.js - FIXED
+// server/controllers/pendingProfessionalController.js - FIXED: Verify PAN/Bank before submission
 const PendingProfessional = require('../models/PendingProfessional');
 const Professional = require('../models/Professional');
 const User = require('../models/User');
 
 // Submit professional profile for admin verification
+// ✅ NOW: Only submits AFTER PAN and Bank are verified
 exports.submitForVerification = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -54,33 +55,47 @@ exports.submitForVerification = async (req, res) => {
       });
     }
 
-    // ✅ FIXED: Check if already a verified professional
-    // First check PendingProfessional for 'approved' status
+    // ✅ NEW: Check if user has verified PAN and Bank details
+    // We need to check if the user has a Professional record with verified details
+    const existingProfessional = await Professional.findOne({ email: req.user.email });
+    
+    if (!existingProfessional) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please complete PAN and Bank verification first'
+      });
+    }
+
+    if (!existingProfessional.panVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please verify your PAN card before submitting'
+      });
+    }
+
+    if (!existingProfessional.bankVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please verify your bank details before submitting'
+      });
+    }
+
+    // ✅ Check if already a verified professional
     const approvedApplication = await PendingProfessional.findOne({ 
       userId,
       verificationStatus: 'approved'
     });
 
     if (approvedApplication) {
-      // If approved in PendingProfessional, check if Professional record exists
-      const existingProfessional = await Professional.findOne({ 
-        email: req.user.email 
+      console.log('❌ User is already a verified professional:', req.user.email);
+      return res.status(400).json({
+        success: false,
+        message: 'You are already registered as a professional',
+        alreadyApproved: true
       });
-
-      if (existingProfessional) {
-        console.log('❌ User is already a verified professional:', req.user.email);
-        return res.status(400).json({
-          success: false,
-          message: 'You are already registered as a professional',
-          alreadyApproved: true
-        });
-      } else {
-        // Edge case: Approved but Professional not created (shouldn't happen)
-        console.log('⚠️ Approved but Professional record missing for:', req.user.email);
-      }
     }
 
-    // ✅ FIXED: Check for existing pending application
+    // ✅ Check for existing pending application
     const existingPending = await PendingProfessional.findOne({
       userId,
       verificationStatus: 'pending'
@@ -94,7 +109,7 @@ exports.submitForVerification = async (req, res) => {
       });
     }
 
-    // ✅ FIXED: If previously rejected, allow resubmission by updating the existing record
+    // ✅ If previously rejected, allow resubmission by updating the existing record
     const rejectedApplication = await PendingProfessional.findOne({
       userId,
       verificationStatus: 'rejected'
@@ -187,8 +202,6 @@ exports.getVerificationStatus = async (req, res) => {
       });
     }
 
-    // ✅ CRITICAL FIX: Always return the actual status from PendingProfessional
-    // Don't check Professional collection here - that's only created AFTER approval
     console.log(`📋 Found application for ${req.user.email}:`, {
       status: pendingProfessional.verificationStatus,
       submittedAt: pendingProfessional.submittedAt,
@@ -223,6 +236,7 @@ exports.getVerificationStatus = async (req, res) => {
     });
   }
 };
+
 // ADMIN: Get all pending verifications
 exports.getAllPendingVerifications = async (req, res) => {
   try {
@@ -253,6 +267,7 @@ exports.getAllPendingVerifications = async (req, res) => {
 };
 
 // ADMIN: Approve professional
+// ✅ UPDATED: Now also updates the existing Professional record instead of creating new one
 exports.approveProfessional = async (req, res) => {
   try {
     const { id } = req.params;
@@ -275,26 +290,22 @@ exports.approveProfessional = async (req, res) => {
       status: pendingProfessional.verificationStatus
     });
 
-    // ✅ FIXED: Allow re-approval if already approved but Professional doesn't exist
+    // ✅ Check if already approved
     if (pendingProfessional.verificationStatus === 'approved') {
-      // Check if Professional record exists
       const existingProfessional = await Professional.findOne({
         email: pendingProfessional.email
       });
 
-      if (existingProfessional) {
+      if (existingProfessional && existingProfessional.oneTimeFieldsLocked) {
         console.log('✅ Professional already exists and is approved:', existingProfessional.email);
         return res.status(400).json({
           success: false,
-          message: 'This application has already been approved and the professional account has been created'
+          message: 'This application has already been approved and the professional account is active',
+          alreadyExists: true
         });
-      } else {
-        // Edge case: Approved but Professional not created - allow re-approval
-        console.log('⚠️ Application marked approved but Professional missing - recreating...');
       }
     }
 
-    // ✅ FIXED: Block only if truly already reviewed and Professional exists
     if (pendingProfessional.verificationStatus === 'rejected') {
       console.log('❌ Application was rejected');
       return res.status(400).json({
@@ -303,50 +314,37 @@ exports.approveProfessional = async (req, res) => {
       });
     }
 
-    // ✅ CRITICAL FIX: Check if professional already exists BEFORE creating
-    const existingProfessional = await Professional.findOne({
+    // ✅ CRITICAL: Find the existing Professional record (created during PAN/Bank verification)
+    let professional = await Professional.findOne({
       email: pendingProfessional.email
     });
 
-    if (existingProfessional) {
-      console.log('❌ Professional already exists in system:', existingProfessional.email);
-      
-      // Update the pending record to reflect it's approved
-      pendingProfessional.verificationStatus = 'approved';
-      pendingProfessional.adminNotes = adminNotes || 'Approved by admin';
-      pendingProfessional.reviewedBy = req.user._id;
-      pendingProfessional.reviewedAt = new Date();
-      await pendingProfessional.save();
-
+    if (!professional) {
+      console.log('❌ Professional record not found. User must complete PAN/Bank verification first.');
       return res.status(400).json({
         success: false,
-        message: 'Professional account already exists in the system',
-        alreadyExists: true
+        message: 'Professional record not found. User must complete PAN and Bank verification before admin approval.'
       });
     }
 
-    console.log('✅ Creating new Professional account...');
+    console.log('✅ Found existing Professional record, updating with profile data...');
 
-    // Create new Professional
-    const professional = new Professional({
-      name: pendingProfessional.name,
-      email: pendingProfessional.email,
-      phone: pendingProfessional.phone,
-      skills: pendingProfessional.skills,
-      specializations: pendingProfessional.skills.map(s => s.category),
-      specialization: pendingProfessional.specialization,
-      experience: pendingProfessional.experience,
-      bio: pendingProfessional.bio,
-      availableDays: pendingProfessional.availableDays,
-      oneTimeFieldsLocked: true,
-      isActive: true,
-      status: 'active',
-      profileStatus: 'active',
-      rating: 5.0
-    });
+    // ✅ Update the Professional record with profile data from pending application
+    professional.name = pendingProfessional.name;
+    professional.phone = pendingProfessional.phone;
+    professional.skills = pendingProfessional.skills;
+    professional.specializations = pendingProfessional.skills.map(s => s.category);
+    professional.specialization = pendingProfessional.specialization;
+    professional.experience = pendingProfessional.experience;
+    professional.bio = pendingProfessional.bio;
+    professional.availableDays = pendingProfessional.availableDays;
+    professional.oneTimeFieldsLocked = true;
+    professional.isActive = true;
+    professional.status = 'active';
+    professional.profileStatus = 'active';
 
     await professional.save();
-    console.log('✅ Professional account created:', professional.email);
+    console.log('✅ Professional record updated with profile data');
 
     // Update User role to professional
     await User.findByIdAndUpdate(pendingProfessional.userId, {
@@ -366,7 +364,7 @@ exports.approveProfessional = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Professional approved and onboarded successfully',
+      message: 'Professional approved and profile completed successfully',
       data: {
         professional,
         pendingRecord: pendingProfessional
