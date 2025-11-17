@@ -158,6 +158,25 @@ const professionals = [
       start: '07:00',
       end: '22:00'
     }
+  },
+  {
+    name: 'Aditya Thakur',
+    email: 'aditya@gmail.com',
+    phone: '+91 9876543211',
+    role: 'Hair Stylist',
+    specializations: ['Hair Dressing', 'Hair Care', 'Hair Styling', 'Hair Color'],
+    experience: 12,
+    bio: 'Leading Hair dresser artist and stylist with 12 years of experience.',
+    rating: 5.0,
+    reviewCount: 245,
+    totalBookings: 350,
+    completedBookings: 348,
+    isActive: true,
+    status: 'active',
+    workingHours: {
+      start: '07:00',
+      end: '22:00'
+    }
   }
 ];
 
@@ -167,31 +186,24 @@ async function seedProfessionals() {
     console.log('🔗 Connecting to MongoDB...');
     await mongoose.connect(process.env.MONGODB_URI);
     console.log('✅ Connected to MongoDB');
-
-    // Clear existing professionals (optional - comment out if you want to keep existing)
     console.log('🗑️  Clearing existing professionals...');
     await Professional.deleteMany({});
     console.log('✅ Cleared existing professionals');
-
     // Insert new professionals
     console.log('📝 Inserting professionals...');
     const result = await Professional.insertMany(professionals);
     console.log(`✅ Successfully inserted ${result.length} professionals`);
-
     // Display summary
     console.log('\n📊 Professionals Summary:');
     result.forEach(prof => {
       console.log(`   • ${prof.name} (${prof.role}) - ${prof.specializations.join(', ')}`);
     });
-
     console.log('\n✨ Seeding completed successfully!');
     process.exit(0);
-
   } catch (error) {
     console.error('❌ Seeding failed:', error);
     process.exit(1);
   }
 }
 
-// Run the seeding
 seedProfessionals();

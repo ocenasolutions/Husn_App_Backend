@@ -16,7 +16,6 @@ const authMiddleware = async (req, res, next) => {
       });
     }
 
-    // Verify token
     const decoded = jwt.verify(token, JWT_SECRET);
     
     console.log('🔍 Auth middleware - decoded token:', {
@@ -24,7 +23,6 @@ const authMiddleware = async (req, res, next) => {
       isProfessional: decoded.isProfessional
     });
 
-    // Check if session exists in Redis
     if (req.app.locals.redis) {
       const sessionExists = await req.app.locals.redis.get(`session:${token}`);
       if (!sessionExists) {
@@ -49,8 +47,6 @@ const authMiddleware = async (req, res, next) => {
         });
       }
       
-      // ⭐ FIXED: Only check if account is permanently suspended/deleted
-      // Don't block access when on-leave (profileStatus) - they need to toggle it back!
       if (user.status === 'suspended' || user.status === 'inactive') {
         return res.status(403).json({
           success: false,
@@ -84,12 +80,11 @@ const authMiddleware = async (req, res, next) => {
 
     // ⭐ CRITICAL: Set req.user with consistent structure
     req.user = {
-      id: user._id.toString(),          // String ID for consistency
-      _id: user._id,                     // MongoDB ObjectId
+      id: user._id.toString(),          
+      _id: user._id,                   
       email: user.email,
       name: user.name,
       role: isProfessional ? 'professional' : (user.role || 'user'),
-      // Include all professional fields if needed
       profileStatus: user.profileStatus,
       isActive: user.isActive,
       status: user.status
@@ -104,9 +99,7 @@ const authMiddleware = async (req, res, next) => {
       isProfessional: req.isProfessional,
       profileStatus: req.user.profileStatus
     });
-
     next();
-
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({

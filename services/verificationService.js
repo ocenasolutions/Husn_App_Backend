@@ -16,10 +16,8 @@ async verifyPAN(panNumber, fullName = '') {
     console.log('🔍 Verifying PAN:', panNumber);
     console.log('🔑 Using API Key:', this.rapidApiKey ? 'Key present ✅' : 'Key missing ❌');
 
-    // Clean PAN number
     const cleanPAN = panNumber.toUpperCase().trim();
 
-    // Validate PAN format before calling API
     const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
     if (!panRegex.test(cleanPAN)) {
       console.log('❌ Invalid PAN format');
@@ -41,7 +39,7 @@ async verifyPAN(panNumber, fullName = '') {
       data: {
         PAN: cleanPAN
       },
-      timeout: 30000 // 30 second timeout
+      timeout: 30000 
     };
 
     console.log('📤 Sending request to PAN API...');
@@ -51,7 +49,6 @@ async verifyPAN(panNumber, fullName = '') {
     const data = response.data;
 
     console.log('📋 PAN API Full Response:', JSON.stringify(data, null, 2));
-
     // Handle different response formats
     let isValid = false;
     let returnedName = '';
@@ -78,12 +75,11 @@ async verifyPAN(panNumber, fullName = '') {
 
     console.log('✅ PAN is valid. Returned name:', returnedName);
 
-    // ✅ CRITICAL: Name must be returned from API for verification to succeed
     if (!returnedName) {
       console.log('⚠️ No name returned from API');
       return {
-        success: true, // API call succeeded
-        verified: false, // But verification incomplete without name
+        success: true, 
+        verified: false, 
         message: 'PAN is valid but registered name could not be retrieved. Please try again later.',
         data: {
           panNumber: cleanPAN,
@@ -92,7 +88,6 @@ async verifyPAN(panNumber, fullName = '') {
       };
     }
 
-    // ✅ If fullName was provided (for name matching), compare them
     if (fullName && fullName.trim()) {
       const nameMatch = this.fuzzyNameMatch(fullName, returnedName);
       console.log('🔍 Name Match Result:', nameMatch);
@@ -114,7 +109,6 @@ async verifyPAN(panNumber, fullName = '') {
       };
     }
 
-    // ✅ No name provided - return fetched name (first-time verification)
     return {
       success: true,
       verified: true,
@@ -137,7 +131,6 @@ async verifyPAN(panNumber, fullName = '') {
       code: error.code
     });
 
-    // Handle specific error cases
     if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
       return {
         success: false,
@@ -230,10 +223,7 @@ async validateIFSC(ifscCode) {
   async verifyBankAccount(accountNumber, ifscCode, accountHolderName) {
     try {
       console.log('🏦 Step 1: Validating IFSC code...');
-      
-      // Step 1: Validate IFSC first (this is more reliable)
       const ifscResult = await this.validateIFSC(ifscCode);
-      
       if (!ifscResult.success) {
         console.log('❌ IFSC validation failed');
         return {
@@ -250,7 +240,6 @@ async validateIFSC(ifscCode) {
       const cleanIFSC = ifscCode.toUpperCase().trim();
 
       try {
-        // Try to create verification task
         const createTaskOptions = {
           method: 'POST',
           url: 'https://indian-bank-account-verification.p.rapidapi.com/v3/tasks',
@@ -298,7 +287,6 @@ async validateIFSC(ifscCode) {
 
           console.log('📋 Verification result:', JSON.stringify(result, null, 2));
 
-          // Check if verification completed successfully
           if (result.status === 'completed' && result.result) {
             const verifiedName = result.result.name || result.result.account_holder_name || '';
             const nameMatch = verifiedName ? this.fuzzyNameMatch(accountHolderName, verifiedName) : true;
@@ -329,13 +317,11 @@ async validateIFSC(ifscCode) {
         console.log('💡 Falling back to IFSC validation only');
       }
 
-      // ✅ FIXED: Mark as verified since IFSC is valid
-      // For most purposes, IFSC validation is sufficient
       console.log('✅ Marking as verified based on IFSC validation');
       
       return {
         success: true,
-        verified: true, // ✅ Changed from false to true
+        verified: true, 
         partialVerification: true,
         data: {
           accountNumber: cleanAccount,
@@ -371,31 +357,26 @@ async validateIFSC(ifscCode) {
   fuzzyNameMatch(name1, name2) {
     if (!name1 || !name2) return false;
 
-    // Normalize names: lowercase, remove special chars, extra spaces
     const normalize = (str) => 
-      str.toLowerCase()
-         .replace(/[^a-z\s]/g, '')
-         .replace(/\s+/g, ' ')
-         .trim();
+    str.toLowerCase()
+    .replace(/[^a-z\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
     
     const n1 = normalize(name1);
     const n2 = normalize(name2);
     
     console.log('🔍 Comparing names:', { original1: name1, original2: name2, normalized1: n1, normalized2: n2 });
     
-    // Exact match
     if (n1 === n2) {
       console.log('✅ Exact match');
       return true;
     }
-
-    // Check if one name contains the other
     if (n1.includes(n2) || n2.includes(n1)) {
       console.log('✅ Substring match');
       return true;
     }
 
-    // Check if all words from shorter name are in longer name
     const words1 = n1.split(' ').filter(w => w.length > 1);
     const words2 = n2.split(' ').filter(w => w.length > 1);
     const shorterWords = words1.length < words2.length ? words1 : words2;
@@ -408,7 +389,6 @@ async validateIFSC(ifscCode) {
     const matchPercentage = (matchCount / shorterWords.length) * 100;
     console.log(`🔍 Word match: ${matchCount}/${shorterWords.length} (${matchPercentage.toFixed(1)}%)`);
 
-    // If at least 70% of words match, consider it a match
     return matchPercentage >= 70;
   }
 }

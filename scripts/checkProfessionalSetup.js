@@ -12,7 +12,6 @@ async function checkProfessionalSetup() {
   try {
     await mongoose.connect(process.env.MONGODB_URI);
     console.log('✅ Connected to MongoDB\n');
-
     // 1. Check all users with professional role
     console.log('📋 CHECKING USERS WITH PROFESSIONAL ROLE...');
     const professionalUsers = await User.find({ role: 'professional' });
@@ -24,7 +23,6 @@ async function checkProfessionalSetup() {
       console.log(`    ID: ${user._id}`);
       console.log(`    Role: ${user.role}\n`);
     }
-
     // 2. Check all Professional documents
     console.log('📋 CHECKING PROFESSIONAL DOCUMENTS...');
     const professionals = await Professional.find();
@@ -46,26 +44,21 @@ async function checkProfessionalSetup() {
       }
       console.log('');
     }
-
     // 3. Check orders with assigned professionals
     console.log('📋 CHECKING ORDERS WITH ASSIGNED PROFESSIONALS...');
     const ordersWithProfessionals = await Order.find({
       'serviceItems.professionalEmail': { $exists: true, $ne: null }
     }).limit(10);
-    
     console.log(`Found ${ordersWithProfessionals.length} orders with assigned professionals:\n`);
-    
     for (const order of ordersWithProfessionals) {
       console.log(`  Order: ${order.orderNumber}`);
       for (const item of order.serviceItems) {
         if (item.professionalEmail) {
           console.log(`    Professional Email: ${item.professionalEmail}`);
           console.log(`    Professional Name: ${item.professionalName}`);
-          
           // Check if professional document exists
           const prof = await Professional.findOne({ email: item.professionalEmail });
           console.log(`    Professional Doc: ${prof ? 'EXISTS' : 'NOT FOUND'}`);
-          
           // Check if user exists
           const user = await User.findOne({ email: item.professionalEmail });
           console.log(`    User Doc: ${user ? `EXISTS (role: ${user.role})` : 'NOT FOUND'}`);
@@ -73,8 +66,6 @@ async function checkProfessionalSetup() {
       }
       console.log('');
     }
-
-    // 4. Recommendations
     console.log('💡 RECOMMENDATIONS:');
     console.log('-------------------');
     

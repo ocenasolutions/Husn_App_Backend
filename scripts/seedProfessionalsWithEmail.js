@@ -117,16 +117,12 @@ async function seedProfessionalsWithEmail() {
     let updatedCount = 0;
 
     for (const proData of sampleProfessionals) {
-      // Check if professional already exists by email
       const existingPro = await Professional.findOne({ 
         email: proData.email 
       });
-
       if (existingPro) {
         console.log(`⏭️  Skipped: ${proData.name} (${proData.email}) - already exists`);
         skippedCount++;
-        
-        // Update if missing critical fields
         let needsUpdate = false;
         if (!existingPro.email) {
           existingPro.email = proData.email;
@@ -143,26 +139,21 @@ async function seedProfessionalsWithEmail() {
           updatedCount++;
         }
       } else {
-        // Create new professional
         const professional = new Professional(proData);
         await professional.save();
         console.log(`✅ Added: ${proData.name} (${proData.email})`);
         addedCount++;
       }
     }
-
     console.log('\n📊 Seeding Summary:');
     console.log(`✅ Added: ${addedCount} professionals`);
     console.log(`🔄 Updated: ${updatedCount} professionals`);
     console.log(`⏭️  Skipped: ${skippedCount} professionals (already exist)`);
-
-    // Verify all have emails
     const totalPros = await Professional.countDocuments();
     const prosWithEmail = await Professional.countDocuments({ 
       email: { $exists: true, $ne: null, $ne: '' } 
     });
     const prosWithoutEmail = totalPros - prosWithEmail;
-
     console.log('\n🔍 Email Verification:');
     console.log(`Total professionals: ${totalPros}`);
     console.log(`With email: ${prosWithEmail}`);
@@ -177,12 +168,9 @@ async function seedProfessionalsWithEmail() {
           { email: '' }
         ]
       }).select('name _id');
-      
       console.warn('Missing emails for:', missing.map(p => p.name).join(', '));
     }
-
     console.log('\n🎉 Seeding completed!');
-
   } catch (error) {
     console.error('❌ Seeding failed:', error);
   } finally {
@@ -191,8 +179,4 @@ async function seedProfessionalsWithEmail() {
   }
 }
 
-// Run seeding
 seedProfessionalsWithEmail();
-
-// To run this script:
-// node scripts/seedProfessionalsWithEmail.js
