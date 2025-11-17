@@ -15,14 +15,12 @@ const GOOGLE_ANDROID_CLIENT_ID = process.env.GOOGLE_ANDROID_CLIENT_ID;
 
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
-// Admin emails list
 const ADMIN_EMAILS = [
   'testingaditya5@gmail.com',
   'aditya2.ocena@gmail.com',
   'testing.ocena@gmail.com',
 ];
 
-// Generate tokens
 const generateTokens = (userId, isProfessional = false) => {
   const payload = { 
     userId, 
