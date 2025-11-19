@@ -81,7 +81,7 @@ const verifyGoogleAccessToken = async (accessToken) => {
   }
 };
 
-// Signup Controller - Step 1: Send OTP
+// ✅ FIXED: Signup Controller - Step 1: Send OTP
 exports.signupSendOTP = async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
@@ -110,26 +110,39 @@ exports.signupSendOTP = async (req, res) => {
 
     const emailLower = email.toLowerCase();
 
-    // Determine if user is admin
+    // Determine user type based on role parameter
     const isAdmin = ADMIN_EMAILS.includes(emailLower);
-    const userRole = isAdmin ? 'admin' : (role || 'professional');
+    const isProfessional = role === 'professional';
+    
+    // Determine final role
+    let userRole;
+    if (isAdmin) {
+      userRole = 'admin';
+    } else if (isProfessional) {
+      userRole = 'professional';
+    } else {
+      userRole = 'user'; // Regular customer
+    }
+
+    console.log('📝 Signup initiated:', { email: emailLower, role: userRole, isProfessional });
 
     // Check if email already exists
-    if (isAdmin) {
-      const existingUser = await User.findOne({ email: emailLower });
-      if (existingUser && existingUser.isVerified) {
-        return res.status(409).json({
-          success: false,
-          message: 'User already exists with this email'
-        });
-      }
-    } else {
-      // For professionals, check Professional collection
+    if (isProfessional) {
+      // Check Professional collection for professionals
       const existingProfessional = await Professional.findOne({ email: emailLower });
       if (existingProfessional) {
         return res.status(409).json({
           success: false,
           message: 'Professional already exists with this email'
+        });
+      }
+    } else {
+      // Check User collection for regular users and admins
+      const existingUser = await User.findOne({ email: emailLower });
+      if (existingUser && existingUser.isVerified) {
+        return res.status(409).json({
+          success: false,
+          message: 'User already exists with this email'
         });
       }
     }
@@ -144,7 +157,7 @@ exports.signupSendOTP = async (req, res) => {
       password,
       role: userRole,
       otp,
-      isProfessional: !isAdmin
+      isProfessional
     };
 
     if (req.app.locals.redis) {
@@ -169,7 +182,7 @@ exports.signupSendOTP = async (req, res) => {
   }
 };
 
-// Signup Controller - Step 2: Verify OTP and Create Account
+// ✅ FIXED: Signup Controller - Step 2: Verify OTP and Create Account
 exports.signupVerifyOTP = async (req, res) => {
   try {
     const { email, otp } = req.body;
@@ -208,8 +221,10 @@ exports.signupVerifyOTP = async (req, res) => {
     let userData;
     let isProfessional = signupData.isProfessional;
 
+    console.log('✅ OTP verified. Creating account:', { email: emailLower, isProfessional });
+
     if (isProfessional) {
-      // Create Professional account
+      // ✅ Create Professional account in Professional collection
       const professional = new Professional({
         name: signupData.name,
         email: signupData.email,
@@ -218,14 +233,14 @@ exports.signupVerifyOTP = async (req, res) => {
         rating: 5.0,
         isActive: true,
         status: 'active',
-        // Store password temporarily for authentication
-        // Note: You'll need to add password field to Professional model
         password: signupData.password
       });
 
       await professional.save();
       userData = professional.toJSON();
       userData.role = 'professional';
+
+      console.log('✅ Professional created:', professional.email);
 
       // Generate tokens with professional flag
       const { accessToken, refreshToken } = generateTokens(professional._id, true);
@@ -255,7 +270,7 @@ exports.signupVerifyOTP = async (req, res) => {
       });
 
     } else {
-      // Create Admin/User account
+      // ✅ Create User account in User collection (Regular user or Admin)
       let user = await User.findOne({ email: signupData.email });
       
       if (user && !user.isVerified) {
@@ -268,14 +283,16 @@ exports.signupVerifyOTP = async (req, res) => {
           name: signupData.name,
           email: signupData.email,
           password: signupData.password,
-          role: signupData.role,
+          role: signupData.role, // 'user' or 'admin'
           isVerified: true
         });
       }
 
       await user.save();
 
-      // Create wallet for admin/user
+      console.log('✅ User created:', user.email, 'Role:', user.role);
+
+      // Create wallet for user/admin
       try {
         await createWallet(user._id);
       } catch (walletError) {
@@ -322,7 +339,7 @@ exports.signupVerifyOTP = async (req, res) => {
   }
 };
 
-// Login Controller
+// ✅ FIXED: Login Controller
 exports.login = async (req, res) => {
   try {
     const { email, password, requestedRole } = req.body;
@@ -337,36 +354,167 @@ exports.login = async (req, res) => {
     const emailLower = email.toLowerCase();
     const isAdminEmail = ADMIN_EMAILS.includes(emailLower);
 
-    // If trying to login as admin, check admin list first
-    if (requestedRole === 'admin' && !isAdminEmail) {
-      return res.status(403).json({
-        success: false,
-        message: 'You are not authorized as an admin. If you believe this is an error, please contact support.'
-      });
-    }
+    console.log('🔍 Login attempt:', { 
+      email: emailLower, 
+      requestedRole, 
+      isAdminEmail,
+      hasPassword: !!password 
+    });
 
     let userData;
     let isProfessional = false;
+    let actualRole = null;
 
-    if (isAdminEmail) {
-      // Admin login - check User collection
+    // ✅ SMART DETECTION: Check based on requestedRole or try both collections
+    
+    if (requestedRole === 'professional' || isAdminEmail) {
+      // Professional or Admin login attempt
+      
+      if (isAdminEmail) {
+        console.log('🔍 Admin email detected, checking User collection...');
+        
+        // Admin - check User collection
+        const user = await User.findOne({ email: emailLower });
+        
+        if (!user) {
+          return res.status(401).json({
+            success: false,
+            message: 'Admin account not found. Please contact support.'
+          });
+        }
+
+        console.log('✅ Admin user found:', { 
+          email: user.email, 
+          role: user.role,
+          isVerified: user.isVerified,
+          hasPassword: !!user.password
+        });
+
+        // Check if user has a password
+        if (!user.password) {
+          return res.status(401).json({
+            success: false,
+            message: 'Please set up your password using "Forgot Password" option or sign up with Google.'
+          });
+        }
+
+        const isValidPassword = await user.comparePassword(password);
+        
+        console.log('🔐 Admin password check:', isValidPassword);
+        
+        if (!isValidPassword) {
+          return res.status(401).json({
+            success: false,
+            message: 'Invalid email or password'
+          });
+        }
+
+        // Update role to admin if needed
+        if (user.role !== 'admin') {
+          console.log('🔄 Updating user role to admin:', user.email);
+          user.role = 'admin';
+          await user.save();
+        }
+
+        userData = user;
+        isProfessional = false;
+        actualRole = 'admin';
+
+        console.log('✅ Admin login successful:', user.email);
+
+      } else {
+        // Professional login
+        console.log('🔍 Checking Professional collection...');
+        const professional = await Professional.findOne({ email: emailLower });
+        
+        if (!professional) {
+          console.log('❌ Professional not found:', emailLower);
+          return res.status(401).json({
+            success: false,
+            message: 'Invalid email or password'
+          });
+        }
+
+        console.log('✅ Professional found:', { 
+          email: professional.email, 
+          hasPassword: !!professional.password 
+        });
+
+        // Check if professional has a password
+        if (!professional.password) {
+          return res.status(401).json({
+            success: false,
+            message: 'Account not properly configured. Please contact support or sign up again.'
+          });
+        }
+
+        const isValidPassword = await professional.comparePassword(password);
+        
+        console.log('🔐 Professional password check:', isValidPassword);
+        
+        if (!isValidPassword) {
+          return res.status(401).json({
+            success: false,
+            message: 'Invalid email or password'
+          });
+        }
+
+        if (!professional.isActive || professional.status !== 'active') {
+          return res.status(403).json({
+            success: false,
+            message: 'Your account is not active. Please contact admin.'
+          });
+        }
+
+        userData = professional;
+        isProfessional = true;
+        actualRole = 'professional';
+        userData.role = 'professional';
+
+        console.log('✅ Professional login successful:', professional.email);
+      }
+
+    } else {
+      // ✅ Regular User login (requestedRole === 'user' or undefined)
+      console.log('🔍 Regular user login, checking User collection...');
+      
       const user = await User.findOne({ email: emailLower });
       
       if (!user) {
-        return res.status(403).json({
+        console.log('❌ User not found:', emailLower);
+        return res.status(401).json({
           success: false,
-          message: 'You are not authorized as an admin. If you believe this is an error, please contact support.'
+          message: 'Invalid email or password'
         });
       }
 
+      console.log('✅ User found:', { 
+        email: user.email, 
+        role: user.role,
+        isVerified: user.isVerified,
+        hasPassword: !!user.password
+      });
+
+      // Check if user is verified
       if (!user.isVerified) {
+        return res.status(403).json({
+          success: false,
+          message: 'Please verify your email address'
+        });
+      }
+
+      // Check if user has a password
+      if (!user.password) {
         return res.status(401).json({
           success: false,
-          message: 'Please verify your account first'
+          message: 'Please set up your password using "Forgot Password" option or sign up with Google.'
         });
       }
 
       const isValidPassword = await user.comparePassword(password);
+      
+      console.log('🔐 User password check:', isValidPassword);
+      
       if (!isValidPassword) {
         return res.status(401).json({
           success: false,
@@ -374,67 +522,20 @@ exports.login = async (req, res) => {
         });
       }
 
-      // Update role if needed
-      if (user.role !== 'admin') {
-        user.role = 'admin';
-        await user.save();
-      }
-
       userData = user;
       isProfessional = false;
+      actualRole = user.role; // 'user' or 'admin'
 
-   } else {
-  // Professional login - check Professional collection
-  const professional = await Professional.findOne({ email: emailLower });
-  
-  if (!professional) {
-    return res.status(401).json({
-      success: false,
-      message: 'Invalid email or password'
-    });
-  }
-
-  // Check if professional has a password
-  if (!professional.password) {
-    return res.status(401).json({
-      success: false,
-      message: 'Account not properly configured. Please contact support or sign up again.'
-    });
-  }
-
-  // Use the comparePassword method from Professional model
-  const isValidPassword = await professional.comparePassword(password);
-  
-  if (!isValidPassword) {
-    return res.status(401).json({
-      success: false,
-      message: 'Invalid email or password'
-    });
-  }
-
-  if (!professional.isActive || professional.status !== 'active') {
-    return res.status(403).json({
-      success: false,
-      message: 'Your account is not active. Please contact admin.'
-    });
-  }
-
-  userData = professional;
-  isProfessional = true;
-  // Add role for consistency
-  userData.role = 'professional';
-}
+      console.log('✅ User login successful:', user.email, 'Role:', user.role);
+    }
 
     // Generate tokens
     const { accessToken, refreshToken } = generateTokens(userData._id, isProfessional);
 
     // Update refresh token
     if (isProfessional) {
-      // Store in Professional
-      userData.refreshToken = refreshToken;
       await Professional.findByIdAndUpdate(userData._id, { refreshToken });
     } else {
-      // Store in User
       userData.refreshToken = refreshToken;
       await userData.save();
     }
@@ -451,12 +552,12 @@ exports.login = async (req, res) => {
     res.json({
       success: true,
       message: 'Login successful',
-      user: isProfessional ? userData.toJSON() : userData.toJSON(),
+      user: userData.toJSON ? userData.toJSON() : userData,
       tokens: { accessToken, refreshToken }
     });
 
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('❌ Login error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error'
@@ -464,7 +565,7 @@ exports.login = async (req, res) => {
   }
 };
 
-// Enhanced Google Auth Controller
+// ✅ FIXED: Enhanced Google Auth Controller
 exports.googleAuth = async (req, res) => {
   try {
     const { accessToken, idToken, userInfo, role } = req.body;
@@ -534,13 +635,24 @@ exports.googleAuth = async (req, res) => {
 
     const emailLower = googleUserData.email.toLowerCase();
     const isAdmin = ADMIN_EMAILS.includes(emailLower);
-    const userRole = isAdmin ? 'admin' : (role || 'professional');
+    const isProfessional = role === 'professional';
+    
+    // Determine final role
+    let userRole;
+    if (isAdmin) {
+      userRole = 'admin';
+    } else if (isProfessional) {
+      userRole = 'professional';
+    } else {
+      userRole = 'user';
+    }
+
+    console.log('🔐 Google auth:', { email: emailLower, role: userRole, isProfessional });
 
     let userData;
-    let isProfessional = !isAdmin;
 
     if (isProfessional) {
-      // Check Professional collection
+      // ✅ Professional - use Professional collection
       let professional = await Professional.findOne({ 
         $or: [
           { googleId: googleUserData.id },
@@ -578,7 +690,6 @@ exports.googleAuth = async (req, res) => {
         await professional.save();
         userData = professional;
 
-        // Send welcome email
         try {
           await sendWelcomeEmail(professional.email, professional.name);
         } catch (emailError) {
@@ -587,8 +698,10 @@ exports.googleAuth = async (req, res) => {
       }
       userData.role = 'professional';
 
+      console.log('✅ Professional Google auth successful:', professional.email);
+
     } else {
-      // Admin - check User collection
+      // ✅ Regular user or Admin - use User collection
       let user = await User.findOne({ 
         $or: [
           { googleId: googleUserData.id },
@@ -614,7 +727,7 @@ exports.googleAuth = async (req, res) => {
           user.isVerified = true;
           updated = true;
         }
-        if (user.role !== 'admin') {
+        if (isAdmin && user.role !== 'admin') {
           user.role = 'admin';
           updated = true;
         }
@@ -630,7 +743,7 @@ exports.googleAuth = async (req, res) => {
           googleEmail: emailLower,
           avatar: googleUserData.picture,
           isVerified: true,
-          role: userRole
+          role: userRole // 'user' or 'admin'
         });
         await user.save();
         userData = user;
@@ -641,6 +754,8 @@ exports.googleAuth = async (req, res) => {
           console.error('Welcome email error:', emailError);
         }
       }
+
+      console.log('✅ User Google auth successful:', user.email, 'Role:', user.role);
     }
 
     // Generate tokens
@@ -682,7 +797,7 @@ exports.googleAuth = async (req, res) => {
 // Forgot Password - Send OTP Controller
 exports.forgotPasswordSendOTP = async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email, role } = req.body;
 
     if (!email) {
       return res.status(400).json({
@@ -692,14 +807,14 @@ exports.forgotPasswordSendOTP = async (req, res) => {
     }
 
     const emailLower = email.toLowerCase();
-    const isAdmin = ADMIN_EMAILS.includes(emailLower);
+    const isProfessional = role === 'professional';
 
     let userData = null;
 
-    if (isAdmin) {
-      userData = await User.findOne({ email: emailLower });
-    } else {
+    if (isProfessional) {
       userData = await Professional.findOne({ email: emailLower });
+    } else {
+      userData = await User.findOne({ email: emailLower });
     }
 
     if (!userData) {
@@ -737,7 +852,7 @@ exports.forgotPasswordSendOTP = async (req, res) => {
 // Forgot Password - Verify OTP Controller
 exports.forgotPasswordVerifyOTP = async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const { email, otp, role } = req.body;
 
     if (!email || !otp) {
       return res.status(400).json({
@@ -747,6 +862,7 @@ exports.forgotPasswordVerifyOTP = async (req, res) => {
     }
 
     const emailLower = email.toLowerCase();
+    const isProfessional = role === 'professional';
 
     // Get OTP from Redis
     let storedOTP = null;
@@ -761,14 +877,12 @@ exports.forgotPasswordVerifyOTP = async (req, res) => {
       });
     }
 
-    const isAdmin = ADMIN_EMAILS.includes(emailLower);
     let userData;
-    let isProfessional = !isAdmin;
 
-    if (isAdmin) {
-      userData = await User.findOne({ email: emailLower });
-    } else {
+    if (isProfessional) {
       userData = await Professional.findOne({ email: emailLower });
+    } else {
+      userData = await User.findOne({ email: emailLower });
     }
 
     if (!userData) {
