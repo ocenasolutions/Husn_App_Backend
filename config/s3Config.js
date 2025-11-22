@@ -184,9 +184,6 @@ const getFileInfo = async (key) => {
 
 // Function to generate thumbnail for video (you might want to integrate with AWS MediaConvert later)
 const generateVideoThumbnail = async (videoKey) => {
-  // This is a placeholder function
-  // In a production environment, you would use AWS MediaConvert or similar service
-  // to generate thumbnails from videos
   console.log('Video thumbnail generation not implemented yet for:', videoKey);
   return null;
 };

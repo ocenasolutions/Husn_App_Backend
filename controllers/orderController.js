@@ -201,6 +201,23 @@ exports.createOrder = async (req, res) => {
       orderType = 'service';
     }
 
+    // ✅ CRITICAL FIX: Get user phone number - check address first, then user profile
+        const userPhone = address.phoneNumber || 
+                         address.phone || 
+                         req.user.phoneNumber || 
+                         req.user.phone || '';
+
+          console.log('📱User phone number for order:', userPhone);
+          console.log('📱Phone source:', address.phoneNumber ? 'address' : 'user profile');
+
+if (!userPhone && orderType !== 'service') {
+  return res.status(400).json({
+    success: false,
+    message: 'Phone number is required for product orders. Please add your phone number to your address.'
+  });
+}
+
+
     // Geocode address for service orders
     let addressWithCoords = { ...address };
     if (serviceItems.length > 0) {
@@ -230,6 +247,17 @@ exports.createOrder = async (req, res) => {
         console.warn('⚠️ Order will be created WITHOUT location coordinates');
       }
     }
+
+    // ✅ CRITICAL FIX: Add phone number and contact name to address
+    addressWithCoords.phoneNumber = userPhone;
+    addressWithCoords.contactName = req.user.name || address.contactName || '';
+
+    console.log('📦 Final address with contact info:', {
+      street: addressWithCoords.street,
+      city: addressWithCoords.city,
+      phoneNumber: addressWithCoords.phoneNumber,
+      contactName: addressWithCoords.contactName
+    });
 
     // Calculate pricing
     let subtotal = 0;
@@ -325,7 +353,7 @@ exports.createOrder = async (req, res) => {
       status,
       serviceItems: processedServiceItems,
       productItems: processedProductItems,
-      address: addressWithCoords,
+      address: addressWithCoords, // ✅ Now includes phoneNumber and contactName
       paymentMethod,
       subtotal,
       deliveryFee,
@@ -341,7 +369,7 @@ exports.createOrder = async (req, res) => {
     await order.populate([
       { path: 'productItems.productId', model: 'Product' },
       { path: 'serviceItems.serviceId', model: 'Service' },
-      { path: 'user', select: 'name email phone' }
+      { path: 'user', select: 'name email phoneNumber phone' }
     ]);
 
     // Create notification for admin
@@ -357,6 +385,8 @@ exports.createOrder = async (req, res) => {
       orderNumber: order.orderNumber,
       street: order.address.street,
       city: order.address.city,
+      phoneNumber: order.address.phoneNumber,
+      contactName: order.address.contactName,
       latitude: order.address.latitude,
       longitude: order.address.longitude
     });

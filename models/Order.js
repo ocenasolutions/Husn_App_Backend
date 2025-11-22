@@ -1,4 +1,4 @@
-// server/models/Order.js - FIXED GEOJSON STRUCTURE
+// server/models/Order.js - FIXED: Address includes phone number
 const mongoose = require('mongoose');
 
 const orderSchema = new mongoose.Schema({
@@ -60,49 +60,47 @@ const orderSchema = new mongoose.Schema({
     }
   }],
 
-serviceItems: [{
-  serviceId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Service',
-    required: false
-  },
-  quantity: {
-    type: Number,
-    required: true,
-    min: 1
-  },
-  price: {
-    type: Number,
-    required: true,
-    min: 0
-  },
-  selectedDate: {
-    type: Date,
-    required: false
-  },
-  selectedTime: {
-    type: String,
-    required: false
-  },
-  // ✅ CHANGED: Use email instead of ID
-  professionalEmail: {
-    type: String,
-    required: false,
-    lowercase: true,
-    trim: true
-  },
-  professionalName: {
-    type: String,
-    required: false
-  },
-  professionalPhone: {
-    type: String,
-    required: false
-  }
-}],
+  serviceItems: [{
+    serviceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Service',
+      required: false
+    },
+    quantity: {
+      type: Number,
+      required: true,
+      min: 1
+    },
+    price: {
+      type: Number,
+      required: true,
+      min: 0
+    },
+    selectedDate: {
+      type: Date,
+      required: false
+    },
+    selectedTime: {
+      type: String,
+      required: false
+    },
+    professionalEmail: {
+      type: String,
+      required: false,
+      lowercase: true,
+      trim: true
+    },
+    professionalName: {
+      type: String,
+      required: false
+    },
+    professionalPhone: {
+      type: String,
+      required: false
+    }
+  }],
 
-
-  // Delivery/Service address with coordinates
+  // ✅ FIXED: Delivery/Service address with contact information
   address: {
     type: {
       type: String,
@@ -124,6 +122,15 @@ serviceItems: [{
       type: String,
       required: true
     },
+    // ✅ NEW: Contact information for delivery
+    phoneNumber: {
+      type: String,
+      required: false
+    },
+    contactName: {
+      type: String,
+      required: false
+    },
     // Coordinates at root level for initial address
     latitude: {
       type: Number,
@@ -139,20 +146,18 @@ serviceItems: [{
     }
   },
 
-  // ✅ FIXED: Real-time user location (for service orders)
-  // Made completely optional - only populated when user shares live location
+  // Real-time user location (for service orders)
   userLiveLocation: {
     type: {
       type: String,
       enum: ['Point'],
-      required: false  // ✅ Changed from default to optional
+      required: false
     },
     coordinates: {
-      type: [Number], // [longitude, latitude] - GeoJSON format
+      type: [Number],
       required: false,
       validate: {
         validator: function(v) {
-          // If coordinates exist, must have exactly 2 elements
           return !v || (Array.isArray(v) && v.length === 2);
         },
         message: 'Coordinates must be an array of [longitude, latitude]'
@@ -168,20 +173,18 @@ serviceItems: [{
     }
   },
 
-  // ✅ FIXED: Real-time professional location (for service orders)
-  // Made completely optional - only populated when professional shares location
+  // Real-time professional location (for service orders)
   professionalLiveLocation: {
     type: {
       type: String,
       enum: ['Point'],
-      required: false  // ✅ Changed from default to optional
+      required: false
     },
     coordinates: {
-      type: [Number], // [longitude, latitude] - GeoJSON format
+      type: [Number],
       required: false,
       validate: {
         validator: function(v) {
-          // If coordinates exist, must have exactly 2 elements
           return !v || (Array.isArray(v) && v.length === 2);
         },
         message: 'Coordinates must be an array of [longitude, latitude]'
@@ -343,7 +346,6 @@ serviceItems: [{
     default: false
   },
 
-
   refundStatus: {
     type: String,
     enum: ['requested', 'approved', 'completed', 'rejected'],
@@ -409,12 +411,11 @@ orderSchema.index({ createdAt: -1 });
 orderSchema.index({ isLiveLocationActive: 1 });
 orderSchema.index({ refundStatus: 1, refundRequestedAt: -1 });
 
-// ✅ FIXED: Conditional geospatial indexes - only if coordinates exist
-// This prevents errors when coordinates are not present
+// Conditional geospatial indexes
 orderSchema.index(
   { 'userLiveLocation': '2dsphere' },
   { 
-    sparse: true,  // ✅ Only index documents that have this field
+    sparse: true,
     partialFilterExpression: {
       'userLiveLocation.coordinates': { $exists: true, $ne: null }
     }
@@ -424,7 +425,7 @@ orderSchema.index(
 orderSchema.index(
   { 'professionalLiveLocation': '2dsphere' },
   { 
-    sparse: true,  // ✅ Only index documents that have this field
+    sparse: true,
     partialFilterExpression: {
       'professionalLiveLocation.coordinates': { $exists: true, $ne: null }
     }
@@ -464,8 +465,7 @@ orderSchema.pre('save', function(next) {
     this.serviceOtp = Math.floor(100000 + Math.random() * 900000).toString();
   }
   
-  // ✅ IMPORTANT: Remove empty GeoJSON objects before saving
-  // This prevents MongoDB GeoJSON validation errors
+  // Remove empty GeoJSON objects before saving
   if (this.userLiveLocation && 
       (!this.userLiveLocation.coordinates || this.userLiveLocation.coordinates.length === 0)) {
     this.userLiveLocation = undefined;
@@ -479,21 +479,21 @@ orderSchema.pre('save', function(next) {
   next();
 });
 
-// ✅ FIXED: Method to update user location with proper GeoJSON structure
+// Method to update user location with proper GeoJSON structure
 orderSchema.methods.updateUserLocation = function(latitude, longitude, address) {
   this.userLiveLocation = {
     type: 'Point',
-    coordinates: [parseFloat(longitude), parseFloat(latitude)],  // [lng, lat] order is critical!
+    coordinates: [parseFloat(longitude), parseFloat(latitude)],
     address: address || null,
     lastUpdated: new Date()
   };
 };
 
-// ✅ FIXED: Method to update professional location with proper GeoJSON structure
+// Method to update professional location with proper GeoJSON structure
 orderSchema.methods.updateProfessionalLocation = function(latitude, longitude) {
   this.professionalLiveLocation = {
     type: 'Point',
-    coordinates: [parseFloat(longitude), parseFloat(latitude)],  // [lng, lat] order is critical!
+    coordinates: [parseFloat(longitude), parseFloat(latitude)],
     lastUpdated: new Date()
   };
 };

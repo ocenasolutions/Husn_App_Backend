@@ -31,7 +31,7 @@ const giftCardRoutes = require('./routes/giftCardRoutes');
 const pendingProfessionalRoutes = require('./routes/pendingProfessionalRoutes');
 const salonRoutes = require('./routes/salonRoutes');
 const salonbookingRoutes = require('./routes/salonbookingRoutes');
-
+const borzoRoutes = require('./routes/borzoRoutes');
 
 const app = express()
 const server = http.createServer(app)
@@ -89,6 +89,7 @@ app.use('/api/gift-cards', giftCardRoutes);
 app.use('/api/pending-professionals',pendingProfessionalRoutes);
 app.use('/api/salons', salonRoutes);
 app.use('/api/salon-bookings', salonbookingRoutes);
+app.use('/api/borzo', borzoRoutes);
 
 app.get("/", (req, res) => {
   res.json({ message: "Booking System API Server is running!" })

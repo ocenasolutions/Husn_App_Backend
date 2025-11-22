@@ -57,7 +57,7 @@ const salonSchema = new mongoose.Schema({
   }],
   // NEW: Service menu photos
   serviceMenuPhotos: [{
-    type: String,
+    type: mongoose.Schema.Types.Mixed, 
     description: String
   }],
   contactNumber: {

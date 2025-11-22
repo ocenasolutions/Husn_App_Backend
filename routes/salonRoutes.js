@@ -3,16 +3,23 @@ const router = express.Router();
 const salonController = require('../controllers/salonController');
 const authMiddleware = require('../middlewares/authMiddleware');
 const adminMiddleware = require('../middlewares/adminMiddleware');
+const multer = require('multer');
+const { uploadMiddleware } = require('../controllers/salonController');
 
 // Public routes
+
+router.post('/upload-temp', authMiddleware, adminMiddleware, uploadMiddleware.mixed, salonController.uploadTempImages);
+
 router.get('/', salonController.getAllSalons);
 router.get('/nearby', salonController.getSalonsNearby);
 router.get('/:id', salonController.getSalonById);
+
 router.get('/:id/slots', salonController.getAvailableSlots);
 
+
 // Admin routes - Salon Management
-router.post('/', authMiddleware, adminMiddleware, salonController.createSalon);
-router.put('/:id', authMiddleware, adminMiddleware, salonController.updateSalon);
+router.post('/', authMiddleware, adminMiddleware,  uploadMiddleware.mixed, salonController.createSalon);
+router.put('/:id', authMiddleware, adminMiddleware, uploadMiddleware.mixed, salonController.updateSalon);
 router.delete('/:id', authMiddleware, adminMiddleware, salonController.deleteSalon);
 router.patch('/:id/featured', authMiddleware, adminMiddleware, salonController.toggleFeatured);
 
