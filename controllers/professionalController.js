@@ -916,3 +916,31 @@ exports.deleteProfessional = async (req, res) => {
     });
   }
 };
+
+exports.getProfessionalByEmail = async (req, res) => {
+  try {
+    const { email } = req.params;
+
+    const professional = await Professional.findOne({ email })
+      .select('name email phone panCard panName panVerified bankDetails bankVerified');
+
+    if (!professional) {
+      return res.status(404).json({
+        success: false,
+        message: 'Professional not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: professional
+    });
+
+  } catch (error) {
+    console.error('Get professional by email error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch professional details'
+    });
+  }
+};

@@ -59,4 +59,11 @@ router.put(
   pendingProfessionalController.rejectProfessional
 );
 
+router.get(
+  '/by-email/:email',
+  authMiddleware,
+  adminMiddleware,
+  professionalController.getProfessionalByEmail
+);
+
 module.exports = router;
