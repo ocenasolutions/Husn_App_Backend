@@ -40,6 +40,8 @@ router.post('/verify-bank', authMiddleware, professionalController.verifyBankDet
 router.post('/complete-profile', authMiddleware, professionalController.completeProfile);
 
 router.get(  '/by-email/:email',  authMiddleware,  adminMiddleware,  professionalController.getProfessionalByEmail);
+
+
 // ============================================
 // ADMIN ROUTES (Admin authentication required)
 // ============================================
