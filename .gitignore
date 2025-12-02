@@ -4,3 +4,4 @@ package-lock.json
 rzp.csv
 config/firebase-service-account.json
 firebase-service-account.json
+scripts/
