@@ -1,4 +1,4 @@
-// server/models/Service.js
+// server/models/Service.js (Updated)
 const mongoose = require('mongoose');
 
 const serviceSchema = new mongoose.Schema({
@@ -32,8 +32,13 @@ const serviceSchema = new mongoose.Schema({
   category: {
     type: String,
     required: [true, 'Service category is required'],
-    enum: ['beauty', 'wellness', 'skincare', 'hair', 'massage', 'facial', 'other'],
+    enum: ['beauty', 'wellness', 'skincare', 'hair', 'massage', 'facial', 'waxing' ,'other'],
     default: 'other'
+  },
+  targetGender: {
+    type: String,
+    enum: ['all', 'men', 'women'],
+    default: 'all'
   },
   duration: {
     type: Number,
@@ -161,7 +166,6 @@ serviceSchema.virtual('isOfferValid').get(function() {
   return now >= startDate && now <= this.offerEndDate;
 });
 
-// Virtual for offer savings amount
 serviceSchema.virtual('offerSavings').get(function() {
   if (!this.isOfferValid || !this.offerPrice) return 0;
   return this.price - this.offerPrice;
@@ -171,6 +175,7 @@ serviceSchema.virtual('offerSavings').get(function() {
 serviceSchema.index({ name: 'text', description: 'text', category: 1 });
 serviceSchema.index({ isActive: 1, featured: -1, createdAt: -1 });
 serviceSchema.index({ offerActive: 1, offerEndDate: 1 }); 
+serviceSchema.index({ targetGender: 1, isActive: 1 });
 
 serviceSchema.pre('save', function(next) {
   if (this.discount > 0 && this.originalPrice) {

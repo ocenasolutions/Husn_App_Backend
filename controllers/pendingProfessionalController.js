@@ -4,7 +4,6 @@ const Professional = require('../models/Professional');
 const User = require('../models/User');
 
 // Submit professional profile for admin verification
-// ✅ NOW: Only submits AFTER PAN and Bank are verified
 exports.submitForVerification = async (req, res) => {
   try {
     const userId = req.user.id;

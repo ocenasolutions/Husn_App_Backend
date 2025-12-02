@@ -7,6 +7,7 @@ const multer = require("multer")
 const path = require("path")
 require("dotenv").config()
 
+// Import existing routes
 const authRoutes = require("./routes/authRoutes")
 const orderRoutes = require("./routes/orderRoutes")
 const serviceRoutes = require("./routes/serviceRoutes")
@@ -32,6 +33,12 @@ const pendingProfessionalRoutes = require('./routes/pendingProfessionalRoutes');
 const salonRoutes = require('./routes/salonRoutes');
 const salonbookingRoutes = require('./routes/salonbookingRoutes');
 const borzoRoutes = require('./routes/borzoRoutes');
+const bannerRoutes = require('./routes/sbannerRoutes');
+
+// 🔔 NEW: Import push notification routes and services
+const pushNotificationRoutes = require('./routes/pushNotificationRoutes');
+const { initializeFCM } = require('./services/fcmService');
+const { initializeCronJobs } = require('./cron/notificationCron');
 
 const app = express()
 const server = http.createServer(app)
@@ -45,14 +52,24 @@ if (!fs.existsSync("uploads")) {
   fs.mkdirSync("uploads", { recursive: true })
 }
 
+// MongoDB Connection
 mongoose
   .connect(process.env.MONGODB_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true,
   })
-  .then(() => console.log("✅ MongoDB Connected"))
+  .then(() => {
+    console.log("✅ MongoDB Connected")
+    
+    // 🔔 Initialize Firebase Cloud Messaging after MongoDB connection
+    initializeFCM();
+    
+    // 🔔 Initialize notification cron jobs
+    initializeCronJobs();
+  })
   .catch((err) => console.error("❌ MongoDB Connection Error:", err))
 
+// Redis Connection
 const redisClient = redis.createClient({
   url: process.env.REDIS_URL,
 })
@@ -64,7 +81,7 @@ redisClient.connect().catch(console.error)
 
 app.locals.redis = redisClient
 
-// Routes
+// Existing Routes
 app.use("/api/auth", authRoutes)
 app.use("/api/services", serviceRoutes)
 app.use("/api/media", mediaRoutes)
@@ -90,20 +107,38 @@ app.use('/api/pending-professionals',pendingProfessionalRoutes);
 app.use('/api/salons', salonRoutes);
 app.use('/api/salon-bookings', salonbookingRoutes);
 app.use('/api/borzo', borzoRoutes);
+app.use('/api/banners', bannerRoutes);
+
+// 🔔 NEW: Push Notification Routes
+app.use('/api/push-notifications', pushNotificationRoutes);
 
 app.get("/", (req, res) => {
-  res.json({ message: "Booking System API Server is running!" })
+  res.json({ 
+    message: "Husn API Server is running!",
+    features: [
+      "User Authentication",
+      "Product Management",
+      "Service Booking",
+      "Push Notifications 🔔",
+      "Payment Processing",
+      "Real-time Chat",
+      "and more..."
+    ]
+  })
 })
 
+// Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack)
   res.status(500).json({ success: false, message: "Something went wrong!" })
 })
 
+// 404 handler
 app.use((req, res) => {
   res.status(404).json({ success: false, message: "Route not found" })
 })
 
+// Initialize Socket.IO
 const { initializeSocket } = require("./config/socketConfig")
 const io = initializeSocket(server)
 
@@ -112,4 +147,6 @@ app.set('io', io)
 const PORT = process.env.PORT || 9000
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`)
+  console.log(`📱 Push notifications enabled`)
+  console.log(`⏰ Scheduled notification cron active`)
 })

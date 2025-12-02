@@ -187,7 +187,8 @@ exports.createService = async (req, res) => {
       tags,
       featured,
       availableSlots,
-      imageUrl
+      imageUrl,
+      targetGender  // ✅ ADD THIS to destructure from req.body
     } = req.body;
 
     // Validation
@@ -204,7 +205,8 @@ exports.createService = async (req, res) => {
       price: parseFloat(price),
       category,
       duration: parseInt(duration),
-      createdBy: req.user._id
+      createdBy: req.user._id,
+      targetGender: targetGender || 'all'  // ✅ FIXED - now uses the destructured value
     };
 
     // Optional fields
@@ -242,6 +244,9 @@ exports.createService = async (req, res) => {
     });
   }
 };
+
+// 2. updateService function - ADD targetGender handling
+
 
 // Apply offer to service (Admin only)
 exports.applyOffer = async (req, res) => {
@@ -374,7 +379,8 @@ exports.updateService = async (req, res) => {
       featured,
       availableSlots,
       isActive,
-      imageUrl
+      imageUrl,
+      targetGender  // ✅ ADD THIS
     } = req.body;
 
     const service = await Service.findById(id);
@@ -403,6 +409,7 @@ exports.updateService = async (req, res) => {
     if (featured !== undefined) service.featured = featured === 'true' || featured === true;
     if (isActive !== undefined) service.isActive = isActive === 'true' || isActive === true;
     if (availableSlots) service.availableSlots = JSON.parse(availableSlots);
+    if (targetGender) service.targetGender = targetGender;  // ✅ ADD THIS LINE
 
     service.updatedBy = req.user._id;
 
