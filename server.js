@@ -7,6 +7,7 @@ const multer = require("multer")
 const path = require("path")
 require("dotenv").config()
 
+// Import existing routes
 const authRoutes = require("./routes/authRoutes")
 const orderRoutes = require("./routes/orderRoutes")
 const serviceRoutes = require("./routes/serviceRoutes")
@@ -32,6 +33,10 @@ const pendingProfessionalRoutes = require('./routes/pendingProfessionalRoutes');
 const salonRoutes = require('./routes/salonRoutes');
 const salonbookingRoutes = require('./routes/salonbookingRoutes');
 const borzoRoutes = require('./routes/borzoRoutes');
+const bannerRoutes = require('./routes/sbannerRoutes');
+
+// Import push notification routes
+const pushNotificationRoutes = require('./routes/pushNotificationRoutes');
 
 const app = express()
 const server = http.createServer(app)
@@ -64,7 +69,7 @@ redisClient.connect().catch(console.error)
 
 app.locals.redis = redisClient
 
-// Routes
+// Existing Routes
 app.use("/api/auth", authRoutes)
 app.use("/api/services", serviceRoutes)
 app.use("/api/media", mediaRoutes)
@@ -90,6 +95,14 @@ app.use('/api/pending-professionals',pendingProfessionalRoutes);
 app.use('/api/salons', salonRoutes);
 app.use('/api/salon-bookings', salonbookingRoutes);
 app.use('/api/borzo', borzoRoutes);
+app.use('/api/banners', bannerRoutes);
+
+// Push Notification Routes
+app.use('/api/push-notifications', pushNotificationRoutes);
+
+// Initialize notification cron jobs
+const { initializeCronJobs } = require('./cron/notificationCron');
+initializeCronJobs();
 
 app.get("/", (req, res) => {
   res.json({ message: "Booking System API Server is running!" })
