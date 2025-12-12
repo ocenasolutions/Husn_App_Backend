@@ -31,6 +31,12 @@ const bannerSchema = new mongoose.Schema({
     enum: ['top', 'middle', 'bottom'],
     default: 'top'
   },
+  type: {
+    type: String,
+    enum: ['service', 'product'],
+    required: [true, 'Banner type is required'],
+    default: 'service'
+  },
   targetGender: {
     type: String,
     enum: ['all', 'men', 'women'],
@@ -59,6 +65,6 @@ const bannerSchema = new mongoose.Schema({
 });
 
 // Index for better query performance
-bannerSchema.index({ isActive: 1, position: 1, order: 1 });
+bannerSchema.index({ isActive: 1, position: 1, order: 1, type: 1 });
 
 module.exports = mongoose.model('Banner', bannerSchema);

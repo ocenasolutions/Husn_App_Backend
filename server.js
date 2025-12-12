@@ -34,21 +34,37 @@ const salonRoutes = require('./routes/salonRoutes');
 const salonbookingRoutes = require('./routes/salonbookingRoutes');
 const borzoRoutes = require('./routes/borzoRoutes');
 const bannerRoutes = require('./routes/sbannerRoutes');
-
-// Import push notification routes
+const payoutRoutes = require('./routes/payoutRoutes');
+const giftCardpaymentRoutes = require('./routes/giftCardpaymentRoutes');
 const pushNotificationRoutes = require('./routes/pushNotificationRoutes');
 
 const app = express()
 const server = http.createServer(app)
 
+// ============================================
+// MIDDLEWARE - MUST BE BEFORE ROUTES!
+// ============================================
+
 app.use(cors())
+
+// Special webhook route needs raw body - MUST be before express.json()
+app.use('/api/payouts/webhook', express.raw({ type: 'application/json' }));
+
+// JSON body parser for all other routes
 app.use(express.json())
+
+// Static files
 app.use("/uploads", express.static("uploads"))
 
+// Create uploads directory if it doesn't exist
 const fs = require("fs")
 if (!fs.existsSync("uploads")) {
   fs.mkdirSync("uploads", { recursive: true })
 }
+
+// ============================================
+// DATABASE CONNECTIONS
+// ============================================
 
 mongoose
   .connect(process.env.MONGODB_URI, {
@@ -69,7 +85,10 @@ redisClient.connect().catch(console.error)
 
 app.locals.redis = redisClient
 
-// Existing Routes
+// ============================================
+// API ROUTES
+// ============================================
+
 app.use("/api/auth", authRoutes)
 app.use("/api/services", serviceRoutes)
 app.use("/api/media", mediaRoutes)
@@ -90,32 +109,42 @@ app.use("/api/rides", rideRoutes)
 app.use("/api/driver", driverRoutes)
 app.use("/api/stock-notifications", stockNotificationRoutes)
 app.use("/api/wallet", walletRoutes)
-app.use('/api/gift-cards', giftCardRoutes);
-app.use('/api/pending-professionals',pendingProfessionalRoutes);
-app.use('/api/salons', salonRoutes);
-app.use('/api/salon-bookings', salonbookingRoutes);
-app.use('/api/borzo', borzoRoutes);
-app.use('/api/banners', bannerRoutes);
-
-// Push Notification Routes
-app.use('/api/push-notifications', pushNotificationRoutes);
+app.use('/api/gift-cards', giftCardRoutes)
+app.use('/api/gift-cards-payment', giftCardpaymentRoutes)
+app.use('/api/pending-professionals', pendingProfessionalRoutes)
+app.use('/api/salons', salonRoutes)
+app.use('/api/salon-bookings', salonbookingRoutes)
+app.use('/api/borzo', borzoRoutes)
+app.use('/api/banners', bannerRoutes)
+app.use('/api/payouts', payoutRoutes)
+app.use('/api/push-notifications', pushNotificationRoutes)
 
 // Initialize notification cron jobs
 const { initializeCronJobs } = require('./cron/notificationCron');
 initializeCronJobs();
 
+// ============================================
+// BASIC ROUTES & ERROR HANDLERS
+// ============================================
+
 app.get("/", (req, res) => {
   res.json({ message: "Booking System API Server is running!" })
 })
 
+// Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack)
   res.status(500).json({ success: false, message: "Something went wrong!" })
 })
 
+// 404 handler - MUST be last route
 app.use((req, res) => {
   res.status(404).json({ success: false, message: "Route not found" })
 })
+
+// ============================================
+// SOCKET.IO & SERVER START
+// ============================================
 
 const { initializeSocket } = require("./config/socketConfig")
 const io = initializeSocket(server)

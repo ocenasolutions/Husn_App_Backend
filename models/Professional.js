@@ -62,7 +62,7 @@ const professionalSchema = new mongoose.Schema({
     trim: true
   }],
   
-  // ONE-TIME FIELDS (Cannot be changed after first save)
+  // ONE-TIME FIELDS
   specialization: {
     type: String,
     default: null,
@@ -82,20 +82,17 @@ const professionalSchema = new mongoose.Schema({
     type: String,
     enum: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
   }],
-  
-  // Flags to lock one-time fields
   oneTimeFieldsLocked: {
     type: Boolean,
     default: false
   },
   
-  // EDITABLE ANYTIME FIELDS
-  // Status can be changed anytime (active/inactive/on-leave)
-profileStatus: {
-  type: String,
-  enum: ['active', 'on-leave'],
-  default: 'active'
-},
+  // EDITABLE FIELDS
+  profileStatus: {
+    type: String,
+    enum: ['active', 'on-leave'],
+    default: 'active'
+  },
   
   // Ratings
   rating: {
@@ -109,7 +106,6 @@ profileStatus: {
     default: 0
   },
   
-  // Availability (can be toggled anytime)
   isActive: {
     type: Boolean,
     default: true
@@ -136,7 +132,6 @@ profileStatus: {
     default: 0
   },
   
-  // Status
   status: {
     type: String,
     enum: ['active', 'inactive', 'suspended'],
@@ -181,6 +176,16 @@ profileStatus: {
   bankVerified: {
     type: Boolean,
     default: false
+  },
+  
+  // Razorpay Payout Integration
+  razorpayContactId: {
+    type: String,
+    default: null
+  },
+  razorpayFundAccountId: {
+    type: String,
+    default: null
   }
 }, {
   timestamps: true
@@ -196,6 +201,7 @@ professionalSchema.index({ rating: -1 });
 professionalSchema.index({ status: 1 });
 professionalSchema.index({ isActive: 1 });
 professionalSchema.index({ googleId: 1 });
+professionalSchema.index({ razorpayContactId: 1 });
 
 // Hash password before saving
 professionalSchema.pre('save', async function(next) {
@@ -210,18 +216,18 @@ professionalSchema.pre('save', async function(next) {
   }
 });
 
-// Compare password method
+// Compare password
 professionalSchema.methods.comparePassword = async function(candidatePassword) {
   if (!this.password) return false;
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-// Virtual for checking availability
+// Virtual for availability
 professionalSchema.virtual('isAvailable').get(function() {
   return this.profileStatus === 'active' && this.status === 'active';
 });
 
-// Virtual for profile completion percentage
+// Virtual for profile completion
 professionalSchema.virtual('profileCompletionPercentage').get(function() {
   let completed = 0;
   const total = 10;
@@ -240,12 +246,10 @@ professionalSchema.virtual('profileCompletionPercentage').get(function() {
   return Math.round((completed / total) * 100);
 });
 
-// Method to extract all categories from skills
 professionalSchema.methods.getCategories = function() {
   return this.skills.map(skill => skill.category);
 };
 
-// Method to extract all subcategories from skills
 professionalSchema.methods.getSubcategories = function() {
   const subcategories = [];
   this.skills.forEach(skill => {
@@ -254,7 +258,7 @@ professionalSchema.methods.getSubcategories = function() {
   return subcategories;
 };
 
-// Remove sensitive data when converting to JSON
+// Remove sensitive data
 professionalSchema.methods.toJSON = function() {
   const professionalObject = this.toObject();
   delete professionalObject.password;
@@ -263,7 +267,6 @@ professionalSchema.methods.toJSON = function() {
   return professionalObject;
 };
 
-// Ensure virtuals are included in JSON
 professionalSchema.set('toJSON', { virtuals: true });
 professionalSchema.set('toObject', { virtuals: true });
 

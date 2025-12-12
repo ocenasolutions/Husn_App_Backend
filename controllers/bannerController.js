@@ -5,12 +5,16 @@ const { deleteFromS3 } = require('../config/s3Config');
 // Get all active banners (Public)
 exports.getAllBanners = async (req, res) => {
   try {
-    const { position, targetGender } = req.query;
+    const { position, targetGender, type } = req.query;
     
     const query = { isActive: true };
     
     if (position) {
       query.position = position;
+    }
+    
+    if (type) {
+      query.type = type;
     }
     
     if (targetGender) {
@@ -38,7 +42,7 @@ exports.getAllBanners = async (req, res) => {
 exports.getAllBannersForAdmin = async (req, res) => {
   try {
     const banners = await Banner.find()
-      .sort({ order: 1, createdAt: -1 })
+      .sort({ type: 1, order: 1, createdAt: -1 })
       .populate('createdBy', 'name email');
     
     res.json({
@@ -62,6 +66,7 @@ exports.createBanner = async (req, res) => {
       description,
       link,
       position,
+      type,
       targetGender,
       order,
       imageUrl
@@ -74,8 +79,16 @@ exports.createBanner = async (req, res) => {
       });
     }
 
+    if (!type || !['service', 'product'].includes(type)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Banner type is required and must be either "service" or "product"'
+      });
+    }
+
     const bannerData = {
       title,
+      type,
       createdBy: req.user._id
     };
 
@@ -125,6 +138,7 @@ exports.updateBanner = async (req, res) => {
       description,
       link,
       position,
+      type,
       targetGender,
       order,
       isActive,
@@ -143,6 +157,7 @@ exports.updateBanner = async (req, res) => {
     if (description !== undefined) banner.description = description;
     if (link !== undefined) banner.link = link;
     if (position) banner.position = position;
+    if (type && ['service', 'product'].includes(type)) banner.type = type;
     if (targetGender) banner.targetGender = targetGender;
     if (order !== undefined) banner.order = parseInt(order);
     if (isActive !== undefined) banner.isActive = isActive === 'true' || isActive === true;

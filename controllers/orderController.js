@@ -260,110 +260,114 @@ if (!userPhone && orderType !== 'service') {
     });
 
     // Calculate pricing
-    let subtotal = 0;
-    const deliveryFee = productItems.length > 0 ? 50 : 0;
-    const serviceFee = serviceItems.length > 0 ? 30 : 0;
+let subtotal = 0;
+const deliveryFee = productItems.length > 0 ? 50 : 0;
+const serviceFee = 0; // ✅ REMOVED: No service fee for services
     
-    // Process product items
-    const processedProductItems = [];
-    for (const item of productItems) {
-      if (!item.productId) {
-        return res.status(400).json({
-          success: false,
-          message: 'Product ID is required for each product item'
-        });
-      }
-
-      const product = await Product.findById(item.productId);
-      if (!product) {
-        return res.status(404).json({
-          success: false,
-          message: `Product not found with ID: ${item.productId}`
-        });
-      }
-      
-      processedProductItems.push({
-        productId: item.productId,
-        quantity: item.quantity,
-        price: item.price || product.price
-      });
-      
-      subtotal += (item.price || product.price) * item.quantity;
-      
-      // Stock notifications
-      const newStock = product.stock - item.quantity;
-      if (newStock === 0) {
-        try {
-          await Notification.createOutOfStockNotification(product);
-        } catch (notifError) {
-          console.error('❌ Failed to create out of stock notification:', notifError);
-        }
-      } else if (newStock <= 5 && product.stock > 5) {
-        try {
-          await Notification.createLowStockNotification(product);
-        } catch (notifError) {
-          console.error('❌ Failed to create low stock notification:', notifError);
-        }
-      }
-    }
-
-    // Process service items
-    const processedServiceItems = [];
-    for (const item of serviceItems) {
-      if (!item.serviceId) {
-        return res.status(400).json({
-          success: false,
-          message: 'Service ID is required for each service item'
-        });
-      }
-
-      const service = await Service.findById(item.serviceId);
-      if (!service) {
-        return res.status(404).json({
-          success: false,
-          message: `Service not found with ID: ${item.serviceId}`
-        });
-      }
-      
-      processedServiceItems.push({
-        serviceId: item.serviceId,
-        quantity: item.quantity,
-        price: item.price || service.price,
-        selectedDate: item.selectedDate,
-        selectedTime: item.selectedTime,
-        professionalId: item.professionalId || null,
-        professionalName: item.professionalName || null
-      });
-      
-      subtotal += (item.price || service.price) * item.quantity;
-    }
-
-    // Calculate tax and total
-    const tax = Math.round(subtotal * 0.18);
-    const calculatedTotal = subtotal + deliveryFee + serviceFee + tax;
-
-    // Generate order number
-    const orderNumber = await Order.generateOrderNumber();
-
-    // Create order
-    const order = new Order({
-      user: req.user._id,
-      orderNumber: orderNumber,
-      type: orderType,
-      status,
-      serviceItems: processedServiceItems,
-      productItems: processedProductItems,
-      address: addressWithCoords, // ✅ Now includes phoneNumber and contactName
-      paymentMethod,
-      subtotal,
-      deliveryFee,
-      serviceFee,
-      tax,
-      totalAmount: calculatedTotal,
-      courier: productItems.length > 0 ? 'FedEx' : undefined,
+// Process product items
+const processedProductItems = [];
+for (const item of productItems) {
+  if (!item.productId) {
+    return res.status(400).json({
+      success: false,
+      message: 'Product ID is required for each product item'
     });
+  }
 
-    await order.save();
+  const product = await Product.findById(item.productId);
+  if (!product) {
+    return res.status(404).json({
+      success: false,
+      message: `Product not found with ID: ${item.productId}`
+    });
+  }
+  
+  processedProductItems.push({
+    productId: item.productId,
+    quantity: item.quantity,
+    price: item.price || product.price
+  });
+  
+  subtotal += (item.price || product.price) * item.quantity;
+  
+  // Stock notifications
+  const newStock = product.stock - item.quantity;
+  if (newStock === 0) {
+    try {
+      await Notification.createOutOfStockNotification(product);
+    } catch (notifError) {
+      console.error('❌ Failed to create out of stock notification:', notifError);
+    }
+  } else if (newStock <= 5 && product.stock > 5) {
+    try {
+      await Notification.createLowStockNotification(product);
+    } catch (notifError) {
+      console.error('❌ Failed to create low stock notification:', notifError);
+    }
+  }
+}
+
+// Process service items
+const processedServiceItems = [];
+for (const item of serviceItems) {
+  if (!item.serviceId) {
+    return res.status(400).json({
+      success: false,
+      message: 'Service ID is required for each service item'
+    });
+  }
+
+  const service = await Service.findById(item.serviceId);
+  if (!service) {
+    return res.status(404).json({
+      success: false,
+      message: `Service not found with ID: ${item.serviceId}`
+    });
+  }
+  
+  processedServiceItems.push({
+    serviceId: item.serviceId,
+    quantity: item.quantity,
+    price: item.price || service.price,
+    selectedDate: item.selectedDate,
+    selectedTime: item.selectedTime,
+    professionalId: item.professionalId || null,
+    professionalName: item.professionalName || null
+  });
+  
+  subtotal += (item.price || service.price) * item.quantity;
+}
+
+// ✅ UPDATED: Calculate tax and total - NO GST for service-only orders
+let tax = 0;
+if (productItems.length > 0) {
+  // Only calculate tax if there are products
+  tax = Math.round(subtotal * 0.18);
+}
+const calculatedTotal = subtotal + deliveryFee + serviceFee + tax;
+
+// Generate order number
+const orderNumber = await Order.generateOrderNumber();
+
+// Create order
+const order = new Order({
+  user: req.user._id,
+  orderNumber: orderNumber,
+  type: orderType,
+  status,
+  serviceItems: processedServiceItems,
+  productItems: processedProductItems,
+  address: addressWithCoords,
+  paymentMethod,
+  subtotal,
+  deliveryFee,
+  serviceFee,
+  tax, 
+  totalAmount: calculatedTotal,
+  courier: productItems.length > 0 ? 'FedEx' : undefined,
+});
+
+await order.save();
 
     // Populate references
     await order.populate([

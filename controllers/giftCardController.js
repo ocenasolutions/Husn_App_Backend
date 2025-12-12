@@ -26,6 +26,13 @@ exports.purchaseGiftCard = async (req, res) => {
       });
     }
 
+    if (!paymentMethod || !['wallet', 'upi', 'card'].includes(paymentMethod)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid payment method'
+      });
+    }
+
     // Generate card number and PIN
     const cardNumber = GiftCard.generateCardNumber();
     const pin = GiftCard.generatePIN();
@@ -37,48 +44,76 @@ exports.purchaseGiftCard = async (req, res) => {
     const expiryDate = new Date();
     expiryDate.setFullYear(expiryDate.getFullYear() + 1);
 
-    // Create gift card
-    const giftCard = new GiftCard({
-      cardNumber,
-      pin,
-      amount,
-      purchasedBy: userId,
-      purchaseTransactionId: paymentTransactionId || `GC${Date.now()}`,
-      recipientName,
-      recipientEmail,
-      recipientPhone,
-      message,
-      theme: theme || 'general',
-      expiryDate
-    });
+    // Process payment based on method
+    let finalTransactionId = paymentTransactionId;
 
-    await giftCard.save();
-
-    // Process payment (deduct from wallet or payment gateway)
     if (paymentMethod === 'wallet') {
+      // Wallet payment - deduct from user's wallet
       try {
         const wallet = await Wallet.findOne({ userId });
         if (!wallet || wallet.balance < amount) {
-          await GiftCard.findByIdAndDelete(giftCard._id);
           return res.status(400).json({
             success: false,
             message: 'Insufficient wallet balance'
           });
         }
 
-        await wallet.addTransaction({
+        const transaction = await wallet.addTransaction({
           type: 'debit',
           amount,
           description: `Gift card purchase - ${cardNumber}`,
           referenceType: 'giftcard',
-          referenceId: giftCard._id.toString(),
+          referenceId: cardNumber,
           metadata: { cardNumber }
         });
+
+        finalTransactionId = transaction._id.toString();
       } catch (walletError) {
-        await GiftCard.findByIdAndDelete(giftCard._id);
-        throw walletError;
+        console.error('Wallet deduction error:', walletError);
+        return res.status(400).json({
+          success: false,
+          message: 'Failed to process wallet payment'
+        });
       }
+    } else if (paymentMethod === 'upi' || paymentMethod === 'card') {
+      // For UPI/Card payments, verify payment was successful
+      // This should integrate with your payment gateway
+      if (!paymentTransactionId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Payment transaction ID required for UPI/Card payments'
+        });
+      }
+
+      // TODO: Verify payment status with payment gateway
+      // const paymentVerified = await verifyPaymentWithGateway(paymentTransactionId);
+      // if (!paymentVerified) {
+      //   return res.status(400).json({
+      //     success: false,
+      //     message: 'Payment verification failed'
+      //   });
+      // }
+
+      finalTransactionId = paymentTransactionId;
     }
+
+    // Create gift card after successful payment
+    const giftCard = new GiftCard({
+      cardNumber,
+      pin,
+      amount,
+      purchasedBy: userId,
+      purchaseTransactionId: finalTransactionId || `GC${Date.now()}`,
+      recipientName,
+      recipientEmail,
+      recipientPhone,
+      message,
+      theme: theme || 'general',
+      expiryDate,
+      paymentMethod // Store payment method used
+    });
+
+    await giftCard.save();
 
     res.status(201).json({
       success: true,
@@ -91,6 +126,7 @@ exports.purchaseGiftCard = async (req, res) => {
         theme,
         recipientName,
         message,
+        paymentMethod,
         shareUrl: `${process.env.APP_URL || 'https://husn.app'}/gift-card/${giftCard._id}`
       }
     });
@@ -203,7 +239,7 @@ exports.verifyGiftCard = async (req, res) => {
   }
 };
 
-// Claim/Redeem gift card
+// Claim/Redeem gift card - ALWAYS adds to wallet
 exports.claimGiftCard = async (req, res) => {
   try {
     const userId = req.user._id;
@@ -256,7 +292,6 @@ exports.claimGiftCard = async (req, res) => {
     // Get or create user's wallet
     let wallet = await Wallet.findOne({ userId });
     if (!wallet) {
-      const Wallet = require('../models/Wallet');
       wallet = new Wallet({
         userId,
         walletAddress: Wallet.generateWalletAddress(userId),
@@ -265,7 +300,7 @@ exports.claimGiftCard = async (req, res) => {
       await wallet.save();
     }
 
-    // Add money to wallet
+    // Add money to wallet - This is the ONLY way gift cards are redeemed
     const transaction = await wallet.addTransaction({
       type: 'credit',
       amount: giftCard.amount,
@@ -274,7 +309,8 @@ exports.claimGiftCard = async (req, res) => {
       referenceId: giftCard._id.toString(),
       metadata: {
         cardNumber,
-        purchasedBy: giftCard.purchasedBy.toString()
+        purchasedBy: giftCard.purchasedBy.toString(),
+        theme: giftCard.theme
       }
     });
 
@@ -283,7 +319,7 @@ exports.claimGiftCard = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Gift card claimed successfully!',
+      message: 'Gift card claimed successfully! Amount added to your wallet.',
       data: {
         amount: giftCard.amount,
         newBalance: wallet.balance,
@@ -386,10 +422,10 @@ exports.getMyRedeemedGiftCards = async (req, res) => {
 // Record gift card share
 exports.recordShare = async (req, res) => {
   try {
-    const { cardId } = req.params;
+    const { cardNumber } = req.params;
     const { platform } = req.body;
 
-    const giftCard = await GiftCard.findById(cardId);
+    const giftCard = await GiftCard.findOne({ cardNumber });
 
     if (!giftCard) {
       return res.status(404).json({
@@ -455,22 +491,30 @@ exports.cancelGiftCard = async (req, res) => {
     giftCard.status = 'cancelled';
     await giftCard.save();
 
-    // Refund to wallet if purchased via wallet
-    const wallet = await Wallet.findOne({ userId });
-    if (wallet) {
-      await wallet.addTransaction({
-        type: 'refund',
-        amount: giftCard.amount,
-        description: `Gift card cancellation refund - ${giftCard.cardNumber}`,
-        referenceType: 'giftcard',
-        referenceId: giftCard._id.toString(),
-        metadata: { cardNumber: giftCard.cardNumber }
-      });
+    // Refund based on original payment method
+    if (giftCard.paymentMethod === 'wallet') {
+      const wallet = await Wallet.findOne({ userId });
+      if (wallet) {
+        await wallet.addTransaction({
+          type: 'refund',
+          amount: giftCard.amount,
+          description: `Gift card cancellation refund - ${giftCard.cardNumber}`,
+          referenceType: 'giftcard',
+          referenceId: giftCard._id.toString(),
+          metadata: { cardNumber: giftCard.cardNumber }
+        });
+      }
+    } else {
+      // For UPI/Card payments, initiate refund through payment gateway
+      // TODO: Implement payment gateway refund
+      // await initiateGatewayRefund(giftCard.purchaseTransactionId, giftCard.amount);
     }
 
     res.json({
       success: true,
-      message: 'Gift card cancelled and refunded successfully'
+      message: giftCard.paymentMethod === 'wallet' 
+        ? 'Gift card cancelled and refunded to wallet successfully'
+        : 'Gift card cancelled. Refund will be processed to your original payment method within 5-7 business days'
     });
 
   } catch (error) {

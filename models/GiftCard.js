@@ -41,6 +41,11 @@ const giftCardSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  paymentMethod: {
+    type: String,
+    enum: ['wallet', 'upi', 'card'],
+    default: 'wallet'
+  },
   
   // Recipient Information
   recipientName: {
@@ -61,7 +66,7 @@ const giftCardSchema = new mongoose.Schema({
     maxlength: 500
   },
   
-  // Redemption Information
+  // Redemption Information - Always goes to wallet
   isRedeemed: {
     type: Boolean,
     default: false
@@ -115,6 +120,7 @@ const giftCardSchema = new mongoose.Schema({
 giftCardSchema.index({ purchasedBy: 1, status: 1 });
 giftCardSchema.index({ redeemedBy: 1 });
 giftCardSchema.index({ expiryDate: 1, status: 1 });
+giftCardSchema.index({ paymentMethod: 1 });
 
 // Generate unique card number
 giftCardSchema.statics.generateCardNumber = function() {
@@ -169,7 +175,7 @@ giftCardSchema.methods.canRedeem = function() {
   return { valid: true };
 };
 
-// Mark as redeemed
+// Mark as redeemed - Amount always goes to wallet
 giftCardSchema.methods.markAsRedeemed = async function(userId, transactionId) {
   this.isRedeemed = true;
   this.redeemedBy = userId;
